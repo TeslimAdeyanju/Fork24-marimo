@@ -13,8 +13,15 @@ import markdown  # type: ignore
 import markdown.preprocessors  # type: ignore
 import pymdownx.emoji  # type: ignore
 
-from marimo._output.hypertext import Html
+from marimo._messaging.mimetypes import KnownMimeType
+from marimo._output.hypertext import Html, is_no_js
+from marimo._output.md_extensions.breakless_lists import (
+    BreaklessListsExtension,
+)
 from marimo._output.md_extensions.external_links import ExternalLinksExtension
+from marimo._output.md_extensions.flexible_indent import (
+    FlexibleIndentExtension,
+)
 from marimo._output.md_extensions.iconify import IconifyExtension
 from marimo._output.rich_help import mddoc
 from marimo._utils.url import is_url
@@ -164,6 +171,8 @@ def _get_extensions() -> list[Union[str, markdown.Extension]]:
         # "pymdownx.b64",
         # Subscripts and strikethrough
         "pymdownx.tilde",
+        # Superscripts and insert
+        "pymdownx.caret",
         # Better code blocks
         "pymdownx.superfences",
         # Task lists
@@ -196,6 +205,10 @@ def _get_extensions() -> list[Union[str, markdown.Extension]]:
         "footnotes",
         # Sane lists, to include <ol start="n">
         "sane_lists",
+        # Flexible indentation - supports 2 or 4 space indentation
+        FlexibleIndentExtension(),
+        # Breakless lists - more compact list formatting
+        BreaklessListsExtension(),
         # Links
         ExternalLinksExtension(),
         # Iconify
@@ -236,7 +249,7 @@ class _md(Html):
         ).replace("</p>", "</span>")
 
         if apply_markdown_class:
-            classes = ["markdown", "prose", "dark:prose-invert"]
+            classes = ["markdown", "prose", "dark:prose-invert", "contents"]
             if size is not None:
                 classes.append(f"prose-{size}")
             super().__init__(
@@ -246,6 +259,30 @@ class _md(Html):
             super().__init__(html_text)
 
     def _repr_markdown_(self) -> str:
+        return self._markdown_text
+
+    def _mime_(self) -> tuple[KnownMimeType, str]:
+        no_js = is_no_js()
+        if no_js:
+            return ("text/markdown", self._markdown_text)
+        # We return text/markdown instead of text/html
+        # so the frontend sanitizes the HTML
+        return ("text/markdown", self.text)
+
+    def __format__(self, spec: str) -> str:
+        """
+        This overrides the default HTML formatting behavior to return the original
+        markdown text instead of the processed HTML. This prevents multiline code
+        blocks from being flattened when nested mo.md() calls are interpolated
+        into other mo.md() calls.
+
+        Args:
+            spec: Format specification (ignored)
+
+        Returns:
+            The original markdown text (self._markdown_text)
+        """
+        del spec
         return self._markdown_text
 
 
@@ -344,7 +381,7 @@ def latex(*, filename: Union[str, Path]) -> None:
         with urlopen(filename) as response:
             text = response.read().decode("utf-8")
     elif (file := Path(filename)).exists():
-        text = file.read_text()
+        text = file.read_text(encoding="utf-8")
     else:
         raise ValueError(f"Invalid filename: {filename}")
 

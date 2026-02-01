@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from starlette.authentication import requires
 from starlette.responses import JSONResponse, PlainTextResponse
 
-from marimo import __version__, _loggers
+from marimo import _loggers
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._server.api.deps import AppState
 from marimo._server.router import APIRouter
@@ -17,6 +17,7 @@ from marimo._utils.health import (
     get_python_version,
     get_required_modules_list,
 )
+from marimo._version import __version__
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -27,7 +28,7 @@ LOGGER = _loggers.marimo_logger()
 router = APIRouter()
 
 
-async def health_check(request: Request) -> JSONResponse:
+def health_check(request: Request) -> JSONResponse:
     del request  # Unused
     return JSONResponse({"status": "healthy"})
 
@@ -231,11 +232,7 @@ async def usage(request: Request) -> JSONResponse:
     if _is_gpu_available():
         try:
             result = subprocess.run(  # noqa: ASYNC221
-                [
-                    "nvidia-smi",
-                    "--query-gpu=index,name,memory.total,memory.used,memory.free",
-                    "--format=csv,noheader,nounits",
-                ],
+                _GPU_STATS_CMD,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -244,6 +241,13 @@ async def usage(request: Request) -> JSONResponse:
                 index_str, name, total_str, used_str, free_str = line.split(
                     ", "
                 )
+                # This is what you get on a DGX Spark
+                if total_str == "[N/A]":
+                    total_str = "0"
+                if used_str == "[N/A]":
+                    used_str = "0"
+                if free_str == "[N/A]":
+                    free_str = "0"
                 total = int(total_str) * 1024 * 1024  # Convert MB to bytes
                 used = int(used_str) * 1024 * 1024
                 free = int(free_str) * 1024 * 1024
@@ -310,6 +314,27 @@ async def connections(request: Request) -> JSONResponse:
     )
 
 
+_GPU_STATS_CMD = [
+    "nvidia-smi",
+    "--query-gpu=index,name,memory.total,memory.used,memory.free",
+    "--format=csv,noheader,nounits",
+]
+
+
 @lru_cache(maxsize=1)
 def _is_gpu_available() -> bool:
-    return DependencyManager.which("nvidia-smi")
+    import subprocess
+
+    if DependencyManager.which("nvidia-smi"):
+        try:
+            _ = subprocess.run(  # noqa: ASYNC221
+                _GPU_STATS_CMD,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return True
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            LOGGER.warning("Failed to extract GPU stats: %s", e)
+            return False
+    return False

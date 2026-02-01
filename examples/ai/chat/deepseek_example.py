@@ -8,7 +8,7 @@
 
 import marimo
 
-__generated_with = "0.10.17"
+__generated_with = "0.17.4"
 app = marimo.App(width="medium")
 
 
@@ -20,13 +20,11 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Using DeepSeek
+    mo.md(r"""
+    # Using DeepSeek
 
-        This example shows how to use [`mo.ui.chat`](https://docs.marimo.io/api/inputs/chat/?h=mo.ui.chat) to make a chatbot backed by [Deepseek](https://deepseek.com/).
-        """
-    )
+    This example shows how to use [`mo.ui.chat`](https://docs.marimo.io/api/inputs/chat/?h=mo.ui.chat) to make a chatbot backed by [Deepseek](https://deepseek.com/).
+    """)
     return
 
 
@@ -53,7 +51,7 @@ def _(mo):
     os_key = os.environ.get("DEEPSEEK_API_KEY")
     input_key = mo.ui.text(label="Deepseek API key", kind="password")
     input_key if not os_key else None
-    return input_key, os, os_key
+    return input_key, os_key
 
 
 @app.cell
@@ -88,7 +86,9 @@ def _(key, mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("""Access the chatbot's historical messages with [`chatbot.value`](https://docs.marimo.io/api/inputs/chat.html#accessing-chat-history).""")
+    mo.md("""
+    Access the chatbot's historical messages with [`chatbot.value`](https://docs.marimo.io/api/inputs/chat.html#accessing-chat-history).
+    """)
     return
 
 

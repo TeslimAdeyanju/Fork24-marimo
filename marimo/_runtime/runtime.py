@@ -42,6 +42,7 @@ from marimo._data.preview_column import (
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._dependencies.errors import ManyModulesNotFoundError
 from marimo._entrypoints.registry import EntryPointRegistry
+from marimo._lint.validate_graph import check_for_errors
 from marimo._messaging.cell_output import CellChannel
 from marimo._messaging.context import http_request_context, run_id_context
 from marimo._messaging.errors import (
@@ -53,6 +54,8 @@ from marimo._messaging.errors import (
     UnknownError,
 )
 from marimo._messaging.ops import (
+    CacheCleared,
+    CacheInfoFetched,
     CellOp,
     CompletedRun,
     DataColumnPreview,
@@ -64,8 +67,10 @@ from marimo._messaging.ops import (
     PackageStatusType,
     RemoveUIElements,
     SecretKeysResult,
+    SQLMetadata,
     SQLTableListPreview,
     SQLTablePreview,
+    ValidateSQLResult,
     VariableDeclaration,
     Variables,
     VariableValue,
@@ -110,7 +115,10 @@ from marimo._runtime.packages.import_error_extractors import (
     try_extract_packages_from_import_error_message,
 )
 from marimo._runtime.packages.module_registry import ModuleRegistry
-from marimo._runtime.packages.package_manager import PackageManager
+from marimo._runtime.packages.package_manager import (
+    LogCallback,
+    PackageManager,
+)
 from marimo._runtime.packages.package_managers import create_package_manager
 from marimo._runtime.packages.utils import (
     PackageRequirement,
@@ -122,6 +130,7 @@ from marimo._runtime.reload.autoreload import ModuleReloader
 from marimo._runtime.reload.module_watcher import ModuleWatcher
 from marimo._runtime.requests import (
     AppMetadata,
+    ClearCacheRequest,
     CodeCompletionRequest,
     ControlRequest,
     CreationRequest,
@@ -131,6 +140,7 @@ from marimo._runtime.requests import (
     ExecuteStaleRequest,
     ExecutionRequest,
     FunctionCallRequest,
+    GetCacheInfoRequest,
     InstallMissingPackagesRequest,
     ListSecretKeysRequest,
     PdbRequest,
@@ -145,6 +155,8 @@ from marimo._runtime.requests import (
     SetUIElementValueRequest,
     SetUserConfigRequest,
     StopRequest,
+    SyncGraphRequest,
+    ValidateSQLRequest,
 )
 from marimo._runtime.runner import cell_runner
 from marimo._runtime.runner.hooks import (
@@ -165,7 +177,6 @@ from marimo._runtime.state import State
 from marimo._runtime.utils.set_ui_element_request_manager import (
     SetUIElementRequestManager,
 )
-from marimo._runtime.validate_graph import check_for_errors
 from marimo._runtime.win32_interrupt_handler import Win32InterruptHandler
 from marimo._secrets.load_dotenv import (
     load_dotenv_with_fallback,
@@ -173,11 +184,17 @@ from marimo._secrets.load_dotenv import (
 from marimo._secrets.secrets import get_secret_keys
 from marimo._server.model import SessionMode
 from marimo._server.types import QueueType
-from marimo._sql.engines.types import EngineCatalog
+from marimo._sql.engines.duckdb import INTERNAL_DUCKDB_ENGINE, DuckDBEngine
+from marimo._sql.engines.types import (
+    EngineCatalog,
+    QueryEngine,
+    SQLConnectionType,
+)
 from marimo._sql.get_engines import (
     engine_to_data_source_connection,
     get_engines_from_variables,
 )
+from marimo._sql.parse import SqlCatalogCheckResult, parse_sql
 from marimo._tracer import kernel_tracer
 from marimo._types.ids import CellId_t, UIElementId, VariableName
 from marimo._types.lifespan import Lifespan
@@ -188,7 +205,6 @@ from marimo._utils.signals import restore_signals
 from marimo._utils.typed_connection import TypedConnection
 
 if TYPE_CHECKING:
-    import queue
     from collections.abc import Awaitable, Iterator, Sequence
     from types import ModuleType
 
@@ -378,9 +394,13 @@ def notebook_dir() -> pathlib.Path | None:
         # return the current working directory
         return pathlib.Path().absolute()
 
-    filename = ctx.filename
+    # NB: __file__ is patched by runner, so always bound to be correct.
+    filename = ctx.globals.get("__file__", None) or ctx.filename
     if filename is not None:
-        return pathlib.Path(filename).parent.absolute()
+        path = pathlib.Path(filename).resolve()
+        while not path.is_dir():
+            path = path.parent
+        return path
 
     return None
 
@@ -483,6 +503,7 @@ class Kernel:
         pre_execution_hooks: list[PreExecutionHookType] | None = None,
         post_execution_hooks: list[PostExecutionHookType] | None = None,
         on_finish_hooks: list[OnFinishHookType] | None = None,
+        render_hook: PostExecutionHookType | None = None,
         debugger_override: marimo_pdb.MarimoPdb | None = None,
     ) -> None:
         self.app_metadata = app_metadata
@@ -516,6 +537,8 @@ class Kernel:
         self.secrets_callbacks = SecretsCallbacks(self)
         self.datasets_callbacks = DatasetCallbacks(self)
         self.packages_callbacks = PackagesCallbacks(self)
+        self.sql_callbacks = SqlCallbacks(self)
+        self.cache_callbacks = CacheCallbacks(self)
 
         # Apply pythonpath from config at initialization
         pythonpath = user_config["runtime"].get("pythonpath")
@@ -554,7 +577,8 @@ class Kernel:
             self._post_execution_hooks.append(attempt_pytest)
 
         # Must be last to properly trigger render.
-        self._post_execution_hooks.append(render_toplevel_defs)
+        if render_hook is not None:
+            self._post_execution_hooks.append(render_hook)
 
         self._globals_lock = threading.RLock()
         self._state_lock = threading.RLock()
@@ -642,11 +666,11 @@ class Kernel:
     def teardown(self) -> None:
         """Teardown resources owned by the kernel."""
         if self.stdout is not None:
-            self.stdout.stop()
+            self.stdout._stop()
         if self.stderr is not None:
-            self.stderr.stop()
+            self.stderr._stop()
         if self.stdin is not None:
-            self.stdin.stop()
+            self.stdin._stop()
         self.stream.stop()
 
         if self.module_watcher is not None:
@@ -758,6 +782,15 @@ class Kernel:
     def _install_execution_context(
         self, cell_id: CellId_t, setting_element_value: bool = False
     ) -> Iterator[ExecutionContext]:
+        """NB: When installed, KeyboardInterrupts may be raised, which MUST be caught.
+
+        try:
+            with self._install_execution_context():
+                # Keyboard interrupts may be raised!
+                ...
+        except KeyboardInterrupt:
+            ...
+        """
         ctx = get_context()
         assert isinstance(ctx, KernelRuntimeContext)
         ctx.execution_context = (
@@ -828,7 +861,9 @@ class Kernel:
         error: Optional[Error] = None
         try:
             cell = compile_cell(
-                code, cell_id=cell_id, carried_imports=carried_imports
+                code,
+                cell_id=cell_id,
+                carried_imports=carried_imports,
             )
         except Exception as e:
             cell = None
@@ -841,10 +876,14 @@ class Kernel:
                 syntax_error[0] = syntax_error[0][
                     syntax_error[0].find("line") :
                 ]
+
+                lineno = getattr(e, "lineno", None)
                 if isinstance(e, ImportStarError):
-                    error = MarimoImportStarError(msg=str(e))
+                    error = MarimoImportStarError(msg=str(e), lineno=lineno)
                 else:
-                    error = MarimoSyntaxError(msg="\n".join(syntax_error))
+                    error = MarimoSyntaxError(
+                        msg="\n".join(syntax_error), lineno=lineno
+                    )
             else:
                 tmpio = io.StringIO()
                 traceback.print_exc(file=tmpio)
@@ -1378,9 +1417,15 @@ class Kernel:
             if isinstance(run_result.exception, MarimoInterrupt):
                 self.last_interrupt_timestamp = time.time()
 
+        # Rebuild graph with sourceful positions
+        # Note, this is relatively expensive, but a reasonable tradeoff
+        graph = self.graph
+        if os.getenv("DEBUGPY_RUNNING"):
+            graph = self.graph.copy(self.app_metadata.filename)
+
         runner = cell_runner.Runner(
             roots=roots,
-            graph=self.graph,
+            graph=graph,
             glbls=self.globals,
             excluded_cells=set(self.errors.keys()),
             debugger=self.debugger,
@@ -1411,26 +1456,41 @@ class Kernel:
                 self.state_updates
             )
             self.state_updates.clear()
-        self.state_updates.clear()
         return cells_with_stale_state
 
     def register_state_update(self, state: State[Any]) -> None:
         """Register a state object as having been updated.
 
-        Should be called when a state's setter is called.
+        Should be called when a state's setter is called
         """
-        # store the state and the currently executing cell
+        from marimo._runtime.threads import is_marimo_thread
+
         ctx = get_context()
         assert ctx.execution_context is not None
-        cell_id = ctx.execution_context.cell_id
-        with self._state_lock:
-            self.state_updates[state] = cell_id
-        to_update = self.update_stateful_values(
-            ctx.state_registry.bound_names(state), state._value
-        )
-        if self.reactive_execution_mode == "autorun":
-            # If autorun, run the cells that depend on the state
-            self.graph.set_stale(to_update)
+        setter_cell_id = ctx.execution_context.cell_id
+
+        # When running on the main thread of execution, state updates
+        # are just logged in a data structure; it is the runner's
+        # job to process these later.
+        if not is_marimo_thread():
+            with self._state_lock:
+                self.state_updates[state] = setter_cell_id
+            return
+
+        # Otherwise, when running in a mo.Thread, we eagerly process
+        # state updates.
+        cells_with_stale_state = set()
+        for cid, cell in self.graph.cells.items():
+            # No self-loops
+            if cid == setter_cell_id and not state.allow_self_loops:
+                continue
+            for ref in cell.refs:
+                # run this cell if any of its refs match the state object
+                # by object ID (via is operator)
+                if ref in self.globals and self.globals[ref] is state:
+                    cells_with_stale_state.add(cid)
+        self.graph.set_stale(cells_with_stale_state, prune_imports=True)
+        if not self.lazy():
             self._execute_stale_cells_callback()
 
     @kernel_tracer.start_as_current_span("delete_cell")
@@ -1446,6 +1506,50 @@ class Kernel:
                     execution_requests=[], deletion_requests=[request]
                 )
             )
+
+    @kernel_tracer.start_as_current_span("sync_graph")
+    async def sync_graph(
+        self,
+        cells: dict[CellId_t, str],
+        run_ids: list[CellId_t],
+        delete_ids: list[CellId_t],
+    ) -> None:
+        """Synchronize kernel graph with file manager state.
+
+        File manager is the source of truth after a reload. This method
+        ensures the kernel graph matches file manager's state by:
+        1. Deleting cells that file manager doesn't know about (orphaned)
+        2. Deleting cells explicitly marked for deletion
+        3. Running/updating cells that changed
+
+        Args:
+            cells: All cells known to file manager (cell_id -> code)
+            run_ids: Cell IDs that should be executed/updated
+            delete_ids: Cell IDs that should be deleted
+        """
+        # Find orphaned cells: in graph but not known to file manager
+        orphaned_cells = set(self.graph.cells.keys()) - set(cells.keys())
+        all_delete_ids = set(delete_ids) | orphaned_cells
+
+        # Create execution requests for cells to run
+        execution_requests = [
+            ExecutionRequest(cell_id=cell_id, code=cells[cell_id])
+            for cell_id in run_ids
+        ]
+
+        # Create deletion requests for all cells to delete
+        deletion_requests = [
+            DeleteCellRequest(cell_id=cell_id) for cell_id in all_delete_ids
+        ]
+
+        # Clean up uninstantiated requests for deleted cells
+        for cell_id in all_delete_ids:
+            if cell_id in self._uninstantiated_execution_requests:
+                del self._uninstantiated_execution_requests[cell_id]
+
+        # Use existing mutate_graph infrastructure to update the graph
+        self.mutate_graph(execution_requests, deletion_requests)
+        await self.run(execution_requests)
 
     @kernel_tracer.start_as_current_span("run")
     async def run(
@@ -1787,9 +1891,38 @@ class Kernel:
                 for name in ctx.ui_element_registry.bound_names(object_id)
                 if not is_local(name)
             }
-            referring_cells.update(
-                self.update_stateful_values(bound_names, value)
-            )
+            variable_values: list[VariableValue] = []
+            for name in bound_names:
+                # TODO update variable values even for namespaces? lenses? etc
+                variable_values.append(
+                    VariableValue.create(name=name, value=value)
+                )
+                try:
+                    # subtracting self.graph.definitions[name]: never rerun the
+                    # cell that created the name
+                    referring_cells |= self.graph.get_referring_cells(
+                        name, language="python"
+                    ) - self.graph.get_defining_cells(name)
+                except Exception:
+                    # This is a serious bug that should never be triggered;
+                    # it means that we couldn't find a UIElement object
+                    # that should exist.
+                    sys.stderr.write(
+                        "An exception was raised when finding cells that "
+                        f"refer to a UIElement value, for bound name {name}. "
+                        "This is a bug in marimo. "
+                        "Please copy the below traceback and paste it in an "
+                        "issue: https://github.com/marimo-team/marimo/issues\n"
+                    )
+                    tmpio = io.StringIO()
+                    traceback.print_exc(file=tmpio)
+                    tmpio.seek(0)
+                    write_traceback(tmpio.read())
+                    # Entering undefined behavior territory ...
+                    continue
+
+            if variable_values:
+                VariableValues(variables=variable_values).broadcast()
 
         if self.reactive_execution_mode == "autorun":
             await self._run_cells(referring_cells)
@@ -1837,41 +1970,6 @@ class Kernel:
 
     def reset_ui_initializers(self) -> None:
         self.ui_initializers = {}
-
-    def update_stateful_values(
-        self, bound_names: set[str], value: Any
-    ) -> set[CellId_t]:
-        variable_values: list[VariableValue] = []
-        referring_cells: set[CellId_t] = set()
-        for name in bound_names:
-            # TODO update variable values even for namespaces? lenses? etc
-            variable_values.append(VariableValue(name=name, value=value))
-            try:
-                # subtracting self.graph.definitions[name]: never rerun the
-                # cell that created the name
-                referring_cells |= self.graph.get_referring_cells(
-                    name, language="python"
-                ) - self.graph.get_defining_cells(name)
-            except Exception:
-                # Internal marimo error
-                sys.stderr.write(
-                    "An exception was raised when finding cells that "
-                    f"refer to a UIElement value, for bound name {name}. "
-                    "This is a bug in marimo. "
-                    "Please copy the below traceback and paste it in an "
-                    "issue: https://github.com/marimo-team/marimo/issues\n"
-                )
-                tmpio = io.StringIO()
-                traceback.print_exc(file=tmpio)
-                tmpio.seek(0)
-                write_traceback(tmpio.read())
-                # Entering undefined behavior territory ...
-                continue
-
-        if variable_values:
-            VariableValues(variables=variable_values).broadcast()
-
-        return referring_cells
 
     @kernel_tracer.start_as_current_span("function_call_request")
     async def function_call_request(
@@ -1982,7 +2080,15 @@ class Kernel:
         if self.graph.cells:
             del request
             LOGGER.debug("App already instantiated.")
-        elif request.auto_run:
+            return
+
+        # Handle markdown cells specially during kernel-ready initialization
+        execution_requests = {
+            er.cell_id: er for er in request.execution_requests
+        }
+        self._handle_markdown_cells_on_instantiate(execution_requests)
+
+        if request.auto_run:
             self.reset_ui_initializers()
             for (
                 object_id,
@@ -1990,14 +2096,79 @@ class Kernel:
             ) in request.set_ui_element_value_request.ids_and_values:
                 self.ui_initializers[object_id] = initial_value
 
-            await self.run(request.execution_requests)
+            await self.run(list(execution_requests.values()))
             self.reset_ui_initializers()
         else:
-            self._uninstantiated_execution_requests = {
-                er.cell_id: er for er in request.execution_requests
-            }
-            for cid in self._uninstantiated_execution_requests:
-                CellOp.broadcast_stale(cell_id=cid, stale=True)
+            self._uninstantiated_execution_requests = execution_requests
+            for cell_id in self._uninstantiated_execution_requests.keys():
+                CellOp.broadcast_stale(cell_id=cell_id, stale=True)
+
+    def _handle_markdown_cells_on_instantiate(
+        self, execution_requests: dict[CellId_t, ExecutionRequest]
+    ) -> None:
+        """Handle markdown cells during kernel-ready initialization.
+
+        For cells that contain only markdown (mo.md calls), this method:
+        1. Compiles the cells to extract markdown content
+        2. Renders the markdown to HTML
+        3. Broadcasts the rendered output immediately
+        4. Marks the cells as completed (not stale)
+        5. Removes them from uninstantiated requests
+
+        NOTE: If 'mo' is not available in the graph definitions, all cells are
+        marked as stale. Regular cells are marked as stale as usual.
+        """
+        # If 'mo' is not available in the graph, mark all cells as stale
+        markdown_cells: dict[CellId_t, str] = {}
+        exports_mo = False
+        for cid, er in execution_requests.items():
+            # Check if cell already exists in graph (to avoid recompilation)
+            cell = self.graph.cells.get(cid)
+            error = None
+
+            # If cell doesn't exist in graph, try to compile it
+            if cell is None:
+                # TODO: Don't bother compiling whole cell.
+                # However, since we still need to extract defs
+                # for mo / marimo, this is OK for now.
+                cell, error = self._try_compiling_cell(cid, er.code, [])
+
+            if cell is None or error is not None:
+                continue
+
+            # Check if this is a markdown cell
+            if cell.markdown is not None:
+                # Remove from uninstantiated requests since it's effectively "run"
+                markdown_cells[cid] = cell.markdown
+            else:
+                # Regular cell - mark as stale
+                exports_mo |= "mo" in cell.defs
+
+        # Handle as default if no cells export 'mo'
+        if not exports_mo:
+            return
+
+        # Since markdown cell, render and broadcast output
+        # Remove cell from outstanding requests
+        from marimo._output.md import md
+
+        # Remove markdown cells from uninstantiated requests
+        for cell_id, content in markdown_cells.items():
+            html_obj = md(content)
+            mimetype, html_content = html_obj._mime_()
+
+            # Broadcast the markdown output
+            CellOp.broadcast_output(
+                channel=CellChannel.OUTPUT,
+                mimetype=mimetype,
+                data=html_content,
+                cell_id=cell_id,
+                status="idle",
+            )
+
+            # Mark the cell as not stale (already "run")
+            CellOp.broadcast_stale(cell_id=cell_id, stale=False)
+            del execution_requests[cell_id]
 
     def load_dotenv(self) -> None:
         dotenvs = self.user_config["runtime"].get("dotenv", [])
@@ -2028,6 +2199,15 @@ class Kernel:
         ) -> None:
             with http_request_context(request.request):
                 await self.run(request.execution_requests)
+            CompletedRun().broadcast()
+
+        async def handle_sync_graph(
+            request: SyncGraphRequest,
+        ) -> None:
+            with http_request_context(None):
+                await self.sync_graph(
+                    request.cells, request.run_ids, request.delete_ids
+                )
             CompletedRun().broadcast()
 
         async def handle_execute_scratchpad(
@@ -2091,6 +2271,7 @@ class Kernel:
         handler.register(CreationRequest, handle_instantiate)
         handler.register(DeleteCellRequest, self.delete_cell)
         handler.register(ExecuteMultipleRequest, handle_execute_multiple)
+        handler.register(SyncGraphRequest, handle_sync_graph)
         handler.register(ExecuteScratchpadRequest, handle_execute_scratchpad)
         handler.register(ExecuteStaleRequest, handle_execute_stale)
         handler.register(FunctionCallRequest, handle_function_call)
@@ -2120,12 +2301,19 @@ class Kernel:
             PreviewDataSourceConnectionRequest,
             self.datasets_callbacks.preview_datasource_connection,
         )
+        # SQL
+        handler.register(ValidateSQLRequest, self.sql_callbacks.validate_sql)
         # Secrets
         handler.register(
             ListSecretKeysRequest, self.secrets_callbacks.list_secrets
         )
         handler.register(
             RefreshSecretsRequest, self.secrets_callbacks.refresh_secrets
+        )
+        # Cache
+        handler.register(ClearCacheRequest, self.cache_callbacks.clear_cache)
+        handler.register(
+            GetCacheInfoRequest, self.cache_callbacks.get_cache_info
         )
 
         return handler
@@ -2146,10 +2334,53 @@ class Kernel:
             await self.request_handler.handle(request)
             LOGGER.debug("Handled control request: %s", request)
 
+    def get_sql_connection(
+        self, variable_name: str
+    ) -> tuple[Optional[SQLConnectionType], Optional[str]]:
+        """
+        Fetch the SQL connection associated with the given variable name.
+        Returns the connection if it supports query or catalog operations, or an error message if not.
+        """
+        variable_name = cast(VariableName, variable_name)
+
+        try:
+            engine_val = self.globals.get(variable_name)
+            engines = get_engines_from_variables([(variable_name, engine_val)])
+            if engines is None or len(engines) == 0:
+                return None, "Engine not found"
+            engine = engines[0][1]
+            if isinstance(engine, (QueryEngine, EngineCatalog)):
+                return engine, None
+            else:
+                return (
+                    None,
+                    "Connection does not support query or catalog operations",
+                )
+        except Exception as e:
+            LOGGER.warning(
+                "Failed to get engine %s", variable_name, exc_info=e
+            )
+            return None, str(e)
+
 
 class DatasetCallbacks:
     def __init__(self, kernel: Kernel):
         self._kernel = kernel
+
+    def get_engine_catalog(
+        self, variable_name: str
+    ) -> tuple[Optional[EngineCatalog[Any]], Optional[str]]:
+        """Get engines that support catalog operations.
+        Returns an error if the connection does not support catalog operations."""
+        variable_name = cast(VariableName, variable_name)
+        connection, error = self._kernel.get_sql_connection(variable_name)
+        if error is not None or connection is None:
+            return None, error
+
+        if isinstance(connection, EngineCatalog):
+            return connection, None
+        else:
+            return None, "Connection does not support catalog operations"
 
     @kernel_tracer.start_as_current_span("preview_dataset_column")
     async def preview_dataset_column(
@@ -2220,31 +2451,6 @@ class DatasetCallbacks:
             ).broadcast()
         return
 
-    def _get_engine_catalog(
-        self, variable_name: str
-    ) -> tuple[Optional[EngineCatalog[Any]], Optional[str]]:
-        """Fetch the catalog-capable engine associated with the given variable name.
-
-        Returns the engine if it supports catalog operations, or an error message if not."""
-        variable_name = cast(VariableName, variable_name)
-
-        try:
-            # Should we find the existing engine instead?
-            engine_val = self._kernel.globals.get(variable_name)
-            engines = get_engines_from_variables([(variable_name, engine_val)])
-            if engines is None or len(engines) == 0:
-                return None, "Engine not found"
-            engine = engines[0][1]
-            if isinstance(engine, EngineCatalog):
-                return engine, None
-            else:
-                return None, "Connection does not support catalog operations"
-        except Exception as e:
-            LOGGER.warning(
-                "Failed to get engine %s", variable_name, exc_info=e
-            )
-            return None, str(e)
-
     @kernel_tracer.start_as_current_span("preview_sql_table")
     async def preview_sql_table(self, request: PreviewSQLTableRequest) -> None:
         """Get table details for an SQL table.
@@ -2260,11 +2466,19 @@ class DatasetCallbacks:
         database_name = request.database
         schema_name = request.schema
         table_name = request.table_name
+        sql_metadata = SQLMetadata(
+            connection=variable_name,
+            database=database_name,
+            schema=schema_name,
+        )
 
-        engine, error = self._get_engine_catalog(variable_name)
+        engine, error = self.get_engine_catalog(variable_name)
         if error is not None or engine is None:
             SQLTablePreview(
-                request_id=request.request_id, table=None, error=error
+                request_id=request.request_id,
+                table=None,
+                error=error,
+                metadata=sql_metadata,
             ).broadcast()
             return
 
@@ -2276,7 +2490,9 @@ class DatasetCallbacks:
             )
 
             SQLTablePreview(
-                request_id=request.request_id, table=table
+                request_id=request.request_id,
+                table=table,
+                metadata=sql_metadata,
             ).broadcast()
         except Exception as e:
             LOGGER.exception(
@@ -2288,6 +2504,7 @@ class DatasetCallbacks:
                 request_id=request.request_id,
                 table=None,
                 error="Failed to get table details: " + str(e),
+                metadata=sql_metadata,
             ).broadcast()
 
     @kernel_tracer.start_as_current_span("preview_sql_table_list")
@@ -2305,11 +2522,19 @@ class DatasetCallbacks:
         variable_name = cast(VariableName, request.engine)
         database_name = request.database
         schema_name = request.schema
+        sql_metadata = SQLMetadata(
+            connection=variable_name,
+            database=database_name,
+            schema=schema_name,
+        )
 
-        engine, error = self._get_engine_catalog(variable_name)
+        engine, error = self.get_engine_catalog(variable_name)
         if error is not None or engine is None:
             SQLTableListPreview(
-                request_id=request.request_id, tables=[], error=error
+                request_id=request.request_id,
+                tables=[],
+                error=error,
+                metadata=sql_metadata,
             ).broadcast()
             return
 
@@ -2320,7 +2545,9 @@ class DatasetCallbacks:
                 include_table_details=False,
             )
             SQLTableListPreview(
-                request_id=request.request_id, tables=table_list
+                request_id=request.request_id,
+                tables=table_list,
+                metadata=sql_metadata,
             ).broadcast()
         except Exception as e:
             LOGGER.exception(
@@ -2330,7 +2557,8 @@ class DatasetCallbacks:
                 request_id=request.request_id,
                 tables=[],
                 error="Failed to get table list: " + str(e),
-            )
+                metadata=sql_metadata,
+            ).broadcast()
 
     @kernel_tracer.start_as_current_span("preview_datasource_connection")
     async def preview_datasource_connection(
@@ -2338,7 +2566,7 @@ class DatasetCallbacks:
     ) -> None:
         """Broadcasts a datasource connection for a given engine"""
         variable_name = cast(VariableName, request.engine)
-        engine, error = self._get_engine_catalog(variable_name)
+        engine, error = self.get_engine_catalog(variable_name)
         if error is not None or engine is None:
             LOGGER.error("Failed to get engine %s", variable_name)
             return
@@ -2353,6 +2581,103 @@ class DatasetCallbacks:
         DataSourceConnections(
             connections=[data_source_connection],
         ).broadcast()
+
+
+class SqlCallbacks:
+    def __init__(self, kernel: Kernel):
+        self._kernel = kernel
+
+    async def _validate_sql_query(self, request: ValidateSQLRequest) -> None:
+        """Validate an SQL query
+
+        This will validate:
+        - the syntax (parsing)
+        - the catalog (table and column names)
+        """
+        request_id = request.request_id
+
+        if request.only_parse:
+            if request.dialect is None:
+                ValidateSQLResult(
+                    request_id=request_id,
+                    error="Dialect is required when only parsing",
+                ).broadcast()
+                return
+
+            # Just parse the query (no DB connection required)
+            parse_result, error = parse_sql(request.query, request.dialect)
+            ValidateSQLResult(
+                request_id=request_id,
+                parse_result=parse_result,
+                error=error,
+            ).broadcast()
+            return
+
+        # Validate against the database
+        # This can be cheap for in-memory engines (duckdb, sqlite)
+        # But potentially expensive and requires an active connection for remote engines
+        # For failed connections, we should not raise an error
+
+        if request.engine is None:
+            ValidateSQLResult(
+                request_id=request_id,
+                error="Engine is required for validating catalog",
+            ).broadcast()
+            return
+
+        variable_name = cast(VariableName, request.engine)
+        engine: Optional[SQLConnectionType] = None
+        if variable_name == INTERNAL_DUCKDB_ENGINE:
+            engine = DuckDBEngine(connection=None)
+            error = None
+        else:
+            engine, error = self._kernel.get_sql_connection(variable_name)
+
+        if error is not None or engine is None:
+            ValidateSQLResult(
+                request_id=request_id,
+                error="Failed to get engine " + variable_name,
+            ).broadcast()
+            return
+
+        # Get the parse error for linting
+        parse_result, parse_error = parse_sql(request.query, engine.dialect)
+        if parse_error is not None:
+            # We don't want to fail the validation if there is a parse error
+            LOGGER.debug("Parse error: %s", parse_error)
+
+        if not isinstance(engine, QueryEngine):
+            ValidateSQLResult(
+                request_id=request_id,
+                error=f"Engine {variable_name} does not support catalog validation.",
+                parse_result=parse_result,
+            ).broadcast()
+            return
+
+        _, error_message = engine.execute_in_explain_mode(request.query)  # type: ignore
+        validate_result = SqlCatalogCheckResult(
+            success=True if error_message is None else False,
+            error_message=error_message,
+        )
+        ValidateSQLResult(
+            request_id=request_id,
+            validate_result=validate_result,
+            parse_result=parse_result,
+            error=None,
+        ).broadcast()
+
+    @kernel_tracer.start_as_current_span("validate_sql")
+    async def validate_sql(self, request: ValidateSQLRequest) -> None:
+        """Validate an SQL query"""
+
+        try:
+            await self._validate_sql_query(request)
+        except Exception as e:
+            LOGGER.exception("Failed to validate SQL query")
+            ValidateSQLResult(
+                request_id=request.request_id,
+                error="Failed to validate SQL query: " + str(e),
+            ).broadcast()
 
 
 class SecretsCallbacks:
@@ -2531,6 +2856,16 @@ class PackagesCallbacks:
         }
         InstallingPackageAlert(packages=package_statuses).broadcast()
 
+        def create_log_callback(pkg: str) -> LogCallback:
+            def log_callback(log_line: str) -> None:
+                InstallingPackageAlert(
+                    packages=package_statuses,
+                    logs={pkg: log_line},
+                    log_status="append",
+                ).broadcast()
+
+            return log_callback
+
         for pkg in missing_packages:
             if self.package_manager.attempted_to_install(package=pkg):
                 # Already attempted an installation; it must have failed.
@@ -2538,15 +2873,35 @@ class PackagesCallbacks:
                 continue
             package_statuses[pkg] = "installing"
             InstallingPackageAlert(packages=package_statuses).broadcast()
+
+            # Send initial "start" log
+            InstallingPackageAlert(
+                packages=package_statuses,
+                logs={pkg: f"Installing {pkg}...\n"},
+                log_status="start",
+            ).broadcast()
+
             version = request.versions.get(pkg)
-            if await self.package_manager.install(pkg, version=version):
+            if await self.package_manager.install(
+                pkg, version=version, log_callback=create_log_callback(pkg)
+            ):
                 package_statuses[pkg] = "installed"
-                InstallingPackageAlert(packages=package_statuses).broadcast()
+                # Send final "done" log
+                InstallingPackageAlert(
+                    packages=package_statuses,
+                    logs={pkg: f"Successfully installed {pkg}\n"},
+                    log_status="done",
+                ).broadcast()
             else:
                 package_statuses[pkg] = "failed"
                 mod = self.package_manager.package_to_module(pkg)
                 self._kernel.module_registry.excluded_modules.add(mod)
-                InstallingPackageAlert(packages=package_statuses).broadcast()
+                # Send final "done" log with error
+                InstallingPackageAlert(
+                    packages=package_statuses,
+                    logs={pkg: f"Failed to install {pkg}\n"},
+                    log_status="done",
+                ).broadcast()
 
         installed_modules = [
             self.package_manager.package_to_module(pkg)
@@ -2559,12 +2914,25 @@ class PackagesCallbacks:
         if self.should_update_script_metadata():
             self.update_script_metadata(installed_modules)
 
+        # All cells that depend on successfully installed modules are re-run.
+        #
+        # This consists of cells that either statically reference the installed
+        # module, or that previously failed with a ModuleNotFoundError matching
+        # an installed module.
         cells_to_run = set(
             cid
             for module in installed_modules
             if (cid := self._kernel.module_registry.defining_cell(module))
             is not None
         )
+
+        for cid, cell in self._kernel.graph.cells.items():
+            if (
+                isinstance(cell.exception, ModuleNotFoundError)
+                and cell.exception.name in installed_modules
+            ):
+                cells_to_run.add(cid)
+
         if cells_to_run:
             await self._kernel._if_autorun_then_run_cells(cells_to_run)
 
@@ -2602,6 +2970,51 @@ class PackagesCallbacks:
             LOGGER.error("Failed to add script metadata to notebook: %s", e)
 
 
+class CacheCallbacks:
+    def __init__(self, kernel: Kernel):
+        self._kernel = kernel
+
+    async def clear_cache(self, request: ClearCacheRequest) -> None:
+        del request
+        from marimo._save.cache import CacheContext
+        from marimo._save.loaders import BasePersistenceLoader
+
+        ctx = get_context()
+        saved = 0
+        for obj in ctx.globals.values():
+            if isinstance(obj, CacheContext):
+                if isinstance(obj.loader, BasePersistenceLoader):
+                    obj.loader.clear()
+
+        CacheCleared(bytes_freed=saved).broadcast()
+
+    async def get_cache_info(self, request: GetCacheInfoRequest) -> None:
+        del request
+        from marimo._save.cache import CacheContext
+
+        ctx = get_context()
+        total_hits = 0
+        total_misses = 0
+        total_time = 0
+        disk_to_free = -1  # TODO: sum up disk usage
+        disk_total = -1
+
+        for obj in ctx.globals.values():
+            if isinstance(obj, CacheContext):
+                hits, misses, _, _, time = obj.cache_info()
+                total_hits += hits
+                total_misses += misses
+                total_time += time
+                # d2f, dt = obj.loader.disk_usage()
+        CacheInfoFetched(
+            hits=total_hits,
+            misses=total_misses,
+            time=total_time,
+            disk_to_free=disk_to_free,
+            disk_total=disk_total,
+        ).broadcast()
+
+
 class RequestHandler:
     def __init__(self) -> None:
         self._handlers: dict[
@@ -2628,7 +3041,7 @@ def launch_kernel(
     set_ui_element_queue: QueueType[SetUIElementValueRequest],
     completion_queue: QueueType[CodeCompletionRequest],
     input_queue: QueueType[str],
-    stream_queue: queue.Queue[KernelMessage] | None,
+    stream_queue: QueueType[KernelMessage] | None,
     socket_addr: tuple[str, int] | None,
     is_edit_mode: bool,
     configs: dict[CellId_t, CellConfig],
@@ -2698,9 +3111,12 @@ def launch_kernel(
     stdin = ThreadSafeStdin(stream) if is_edit_mode else None
     debugger = (
         marimo_pdb.MarimoPdb(stdout=stdout, stdin=stdin)
-        if is_edit_mode
+        if is_edit_mode and not bool(os.getenv("DEBUGPY_RUNNING"))
         else None
     )
+
+    # Run mode kernels do not need additional rendering for toplevel defs
+    render_hook = render_toplevel_defs if is_edit_mode else None
 
     # In run mode, the kernel should always be in autorun, and the module
     # autoreloader is disabled
@@ -2729,6 +3145,7 @@ def launch_kernel(
         debugger_override=debugger,
         user_config=user_config,
         enqueue_control_request=_enqueue_control_request,
+        render_hook=render_hook,
     )
     ctx = initialize_kernel_context(
         kernel=kernel,

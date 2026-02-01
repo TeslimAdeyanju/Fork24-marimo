@@ -8,7 +8,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Literal, Optional, Union, cast
 
-from marimo import __version__
 from marimo._ast.app_config import _AppConfig
 from marimo._config.config import MarimoConfig, PartialMarimoConfig
 from marimo._convert.converters import MarimoConvert
@@ -16,17 +15,31 @@ from marimo._output.utils import uri_encode_component
 from marimo._schemas.notebook import NotebookV1
 from marimo._schemas.session import NotebookSessionV1
 from marimo._server.api.utils import parse_title
-from marimo._server.file_manager import read_css_file, read_html_head_file
 from marimo._server.model import SessionMode
+from marimo._server.notebook import read_css_file, read_html_head_file
 from marimo._server.tokens import SkewProtectionToken
 from marimo._utils.versions import is_editable
+from marimo._version import __version__
 
 MOUNT_CONFIG_TEMPLATE = "'{{ mount_config }}'"
+
+
+_json_script_escapes = {
+    ord(">"): "\\u003E",
+    ord("<"): "\\u003C",
+    ord("&"): "\\u0026",
+}
 
 
 def _html_escape(text: str) -> str:
     """Escape HTML special characters."""
     return html.escape(text, quote=True)
+
+
+def json_script(data: Any) -> str:
+    # See https://github.com/django/django/blob/main/django/utils/html.py#L88C1-L92C2
+    # Only escape values that can break out of a script tag
+    return json.dumps(data, sort_keys=True).translate(_json_script_escapes)
 
 
 def _get_mount_config(
@@ -78,9 +91,7 @@ def _get_mount_config(
             "session": {session},
             "runtimeConfig": {runtime_config},
         }}
-""".format(
-        **{k: json.dumps(v, sort_keys=True) for k, v in options.items()}
-    ).strip()
+""".format(**{k: json_script(v) for k, v in options.items()}).strip()
 
 
 def home_page_template(
@@ -89,6 +100,7 @@ def home_page_template(
     user_config: MarimoConfig,
     config_overrides: PartialMarimoConfig,
     server_token: SkewProtectionToken,
+    asset_url: Optional[str] = None,
 ) -> str:
     html = html.replace("{{ base_url }}", base_url)
     html = html.replace("{{ title }}", "marimo")
@@ -100,7 +112,8 @@ def home_page_template(
         "{{ user_config }}", _html_escape(json.dumps(user_config))
     )
     html = html.replace("{{ server_token }}", str(server_token))
-    # /TODO
+
+    html = _replace_asset_urls(html, asset_url)
 
     html = html.replace(
         MOUNT_CONFIG_TEMPLATE,
@@ -131,6 +144,7 @@ def notebook_page_template(
     filename: Optional[str],
     mode: SessionMode,
     remote_url: Optional[str] = None,
+    asset_url: Optional[str] = None,
 ) -> str:
     html = html.replace("{{ base_url }}", base_url)
 
@@ -152,7 +166,8 @@ def notebook_page_template(
         "{{ user_config }}", _html_escape(json.dumps(user_config))
     )
     html = html.replace("{{ server_token }}", str(server_token))
-    # /TODO
+
+    html = _replace_asset_urls(html, asset_url)
 
     html = html.replace(
         MOUNT_CONFIG_TEMPLATE,
@@ -254,7 +269,7 @@ def static_notebook_template(
         f"""
     <script data-marimo="true">
         window.__MARIMO_STATIC__ = {{}};
-        window.__MARIMO_STATIC__.files = {json.dumps(files)};
+        window.__MARIMO_STATIC__.files = {json_script(files)};
     </script>
     """
     )
@@ -301,12 +316,7 @@ def static_notebook_template(
     )
 
     # Replace all relative href and src with absolute URL
-    html = (
-        html.replace("href='./", f"crossorigin='anonymous' href='{asset_url}/")
-        .replace("src='./", f"crossorigin='anonymous' src='{asset_url}/")
-        .replace('href="./', f'crossorigin="anonymous" href="{asset_url}/')
-        .replace('src="./', f'crossorigin="anonymous" src="{asset_url}/')
-    )
+    html = _replace_asset_urls(html, asset_url)
 
     # Append to head
     html = html.replace("</head>", f"{static_block}</head>")
@@ -472,3 +482,25 @@ def _inject_custom_css_for_config(
 
     css_block = "\n".join(css_contents)
     return html.replace("</head>", f"{css_block}</head>")
+
+
+def _replace_asset_urls(html: str, asset_url: Optional[str]) -> str:
+    """Replace asset URLs with the given asset URL.
+
+    These are naturally relative URLs. This can be used to load assets
+    from a CDN instead of from the marimo server.
+
+    The asset URL can be parameterized with {version}
+    """
+    if asset_url is None:
+        return html
+
+    if "{version}" in asset_url:
+        asset_url = asset_url.replace("{version}", __version__)
+
+    return (
+        html.replace("href='./", f"crossorigin='anonymous' href='{asset_url}/")
+        .replace("src='./", f"crossorigin='anonymous' src='{asset_url}/")
+        .replace('href="./', f'crossorigin="anonymous" href="{asset_url}/')
+        .replace('src="./', f'crossorigin="anonymous" src="{asset_url}/')
+    )

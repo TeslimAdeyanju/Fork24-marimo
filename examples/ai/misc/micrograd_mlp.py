@@ -11,108 +11,102 @@
 
 import marimo
 
-__generated_with = "0.8.19"
+__generated_with = "0.17.4"
 app = marimo.App()
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md("""# Neural Networks with Micrograd""")
+def _(mo):
+    mo.md("""
+    # Neural Networks with Micrograd
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        This marimo notebook trains a tiny **neural network** using
-        Andrej Karpathy's [micrograd
-        library](https://github.com/karpathy/micrograd).
-        Micrograd is an implementation of PyTorch-like automatic
-        differentiation using only Python scalar operations. This notebook was
-        adapted from a [demo
-        notebook](https://github.com/karpathy/micrograd/blob/master/demo.ipynb) by
-        Andrej.
-        """
-    )
+def _(mo):
+    mo.md("""
+    This marimo notebook trains a tiny **neural network** using
+    Andrej Karpathy's [micrograd
+    library](https://github.com/karpathy/micrograd).
+    Micrograd is an implementation of PyTorch-like automatic
+    differentiation using only Python scalar operations. This notebook was
+    adapted from a [demo
+    notebook](https://github.com/karpathy/micrograd/blob/master/demo.ipynb) by
+    Andrej.
+    """)
     return
 
 
 @app.cell
-def __():
+def _():
     import random
     import numpy as np
     import matplotlib.pyplot as plt
 
     np.random.seed(1337)
     random.seed(1337)
-    return np, plt, random
+    return np, plt
 
 
 @app.cell
-def __():
+def _():
     from micrograd.engine import Value
     from micrograd.nn import Neuron, Layer, MLP
-    return Layer, MLP, Neuron, Value
+    return MLP, Value
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        We start by generating a synthetic dataset of points labeled +1 or -1.
-        Our goal is to train a network that can classify these points according
-        to their labels, learning a decision boundary that separates them.
-        """
-    )
+def _(mo):
+    mo.md("""
+    We start by generating a synthetic dataset of points labeled +1 or -1.
+    Our goal is to train a network that can classify these points according
+    to their labels, learning a decision boundary that separates them.
+    """)
     return
 
 
 @app.cell
-def __():
+def _():
     from sklearn.datasets import make_moons, make_blobs
 
     X, y = make_moons(n_samples=100, noise=0.1)
     y = y * 2 - 1  # make y be -1 or 1
-    return X, make_blobs, make_moons, y
+    return X, y
 
 
 @app.cell
-def __(X, mo, plt, y):
+def _(X, mo, plt, y):
     plt.figure(figsize=(5, 5))
     mo.center(plt.scatter(X[:, 0], X[:, 1], c=y, s=20, cmap="jet"))
     return
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        Note that the decision boundary must be **nonlinear**, which can be readily
-        learned by neural networks. This could also be achieved by "shallow" or
-        classical machine learning methods with the appropriate featurization or
-        [kernelization](https://scikit-learn.org/stable/modules/svm.html).
-        """
-    )
+def _(mo):
+    mo.md("""
+    Note that the decision boundary must be **nonlinear**, which can be readily
+    learned by neural networks. This could also be achieved by "shallow" or
+    classical machine learning methods with the appropriate featurization or
+    [kernelization](https://scikit-learn.org/stable/modules/svm.html).
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        **Try it!** Train a neural network by hitting the "Train" button. The
-            learned decision boundary will be plotted below.
+def _(mo):
+    mo.md("""
+    **Try it!** Train a neural network by hitting the "Train" button. The
+        learned decision boundary will be plotted below.
 
-            _Try experimenting with the parameters. What happens if you change
-            the number of layers and their sizes?_
-        """
-    )
+        _Try experimenting with the parameters. What happens if you change
+        the number of layers and their sizes?_
+    """)
     return
 
 
 @app.cell
-def __(mo):
+def _(mo):
     n_layers = mo.ui.slider(
         start=1, stop=2, step=1, value=2, show_value=True,
         label="number of layers"
@@ -122,7 +116,7 @@ def __(mo):
 
 
 @app.cell
-def __(mo, n_layers):
+def _(mo, n_layers):
     layer_sizes = mo.ui.array([
         mo.ui.slider(4, 16, step=1, value=12, show_value=True)
         for i in range(n_layers.value)
@@ -151,11 +145,11 @@ def __(mo, n_layers):
     )
 
     training_parameters
-    return iterations, layer_sizes, training_parameters
+    return (training_parameters,)
 
 
 @app.cell
-def __(MLP, mo, n_layers, train, training_parameters):
+def _(MLP, mo, n_layers, train, training_parameters):
     mo.stop(
         training_parameters.value is None,
         mo.md("Click the `Train` button to continue").callout(kind="warn")
@@ -169,17 +163,17 @@ def __(MLP, mo, n_layers, train, training_parameters):
         model, 
         iters=training_parameters.value["iterations"]
     )
-    return model, trained_model
+    return (trained_model,)
 
 
 @app.cell
-def __(plot_decision_boundary, trained_model):
+def _(plot_decision_boundary, trained_model):
     plot_decision_boundary(trained_model)
     return
 
 
 @app.cell
-def __(Value, X, np, y):
+def _(Value, X, np, y):
     def loss(model, batch_size=None):
 
         # inline DataLoader :)
@@ -210,7 +204,7 @@ def __(Value, X, np, y):
 
 
 @app.cell
-def __(loss, mo):
+def _(loss, mo):
     def train(model, iters=20):
         for k in mo.status.progress_bar(range(iters)):
 
@@ -234,7 +228,7 @@ def __(loss, mo):
 
 
 @app.cell
-def __(Value, X, np, plt, y):
+def _(Value, X, np, plt, y):
     def plot_decision_boundary(model):
         h = 0.25
         x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
@@ -258,7 +252,7 @@ def __(Value, X, np, plt, y):
 
 
 @app.cell
-def __():
+def _():
     import marimo as mo
     return (mo,)
 

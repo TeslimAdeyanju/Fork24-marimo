@@ -75,13 +75,13 @@ describe("useCellClipboard", () => {
 
       expect(mockClipboard.write).toHaveBeenCalledWith([
         expect.objectContaining({
-          types: ["application/x-marimo-cell", "text/plain"],
+          types: ["web application/x-marimo-cell", "text/plain"],
         }),
       ]);
 
       expect(toast).toHaveBeenCalledWith({
         title: "Cell copied",
-        description: "Cell has been copied to clipboard",
+        description: "Cell has been copied to clipboard.",
       });
     });
 
@@ -94,17 +94,17 @@ describe("useCellClipboard", () => {
 
       expect(mockClipboard.write).toHaveBeenCalledWith([
         expect.objectContaining({
-          types: ["application/x-marimo-cell", "text/plain"],
+          types: ["web application/x-marimo-cell", "text/plain"],
         }),
       ]);
 
       expect(toast).toHaveBeenCalledWith({
         title: "2 cells copied",
-        description: "2 cells have been copied to clipboard",
+        description: "2 cells have been copied to clipboard.",
       });
     });
 
-    it("should show error toast when no cells found", async () => {
+    it("should not write when no cells found", async () => {
       asMock(getNotebook).mockReturnValue(MockNotebook.notebookState());
 
       const { result } = renderHook(() => useCellClipboard());
@@ -113,25 +113,17 @@ describe("useCellClipboard", () => {
         await result.current.copyCells([mockCellId1]);
       });
 
-      expect(toast).toHaveBeenCalledWith({
-        title: "Error",
-        description: "No cells found",
-        variant: "danger",
-      });
+      expect(mockClipboard.write).not.toHaveBeenCalled();
     });
 
-    it("should show error toast when empty cell list provided", async () => {
+    it("should not write when empty cell list provided", async () => {
       const { result } = renderHook(() => useCellClipboard());
 
       await act(async () => {
         await result.current.copyCells([]);
       });
 
-      expect(toast).toHaveBeenCalledWith({
-        title: "Error",
-        description: "No cells found",
-        variant: "danger",
-      });
+      expect(mockClipboard.write).not.toHaveBeenCalled();
     });
 
     it("should fallback to writeText when clipboard.write fails for single cell", async () => {
@@ -148,7 +140,7 @@ describe("useCellClipboard", () => {
       expect(mockClipboard.writeText).toHaveBeenCalledWith(mockCellCode1);
       expect(toast).toHaveBeenCalledWith({
         title: "Cell copied",
-        description: "Cell code has been copied to clipboard",
+        description: "Cell has been copied to clipboard.",
       });
     });
 
@@ -168,7 +160,7 @@ describe("useCellClipboard", () => {
       );
       expect(toast).toHaveBeenCalledWith({
         title: "2 cells copied",
-        description: "2 cells code have been copied to clipboard",
+        description: "2 cells have been copied to clipboard.",
       });
     });
 
@@ -186,11 +178,6 @@ describe("useCellClipboard", () => {
         "Failed to copy cells to clipboard",
         expect.any(Error),
       );
-      expect(toast).toHaveBeenCalledWith({
-        title: "Copy failed",
-        description: "Failed to copy cells to clipboard",
-        variant: "danger",
-      });
     });
 
     it("should filter out non-existent cells", async () => {
@@ -204,13 +191,13 @@ describe("useCellClipboard", () => {
 
       expect(mockClipboard.write).toHaveBeenCalledWith([
         expect.objectContaining({
-          types: ["application/x-marimo-cell", "text/plain"],
+          types: ["web application/x-marimo-cell", "text/plain"],
         }),
       ]);
 
       expect(toast).toHaveBeenCalledWith({
         title: "Cell copied",
-        description: "Cell has been copied to clipboard",
+        description: "Cell has been copied to clipboard.",
       });
     });
   });
@@ -223,10 +210,10 @@ describe("useCellClipboard", () => {
       };
 
       const mockItem = {
-        types: ["application/x-marimo-cell"],
+        types: ["web application/x-marimo-cell"],
         getType: vi.fn().mockResolvedValue(
           new Blob([JSON.stringify(clipboardData)], {
-            type: "application/x-marimo-cell",
+            type: "web application/x-marimo-cell",
           }),
         ),
       };
@@ -243,7 +230,7 @@ describe("useCellClipboard", () => {
         cellId: mockCellId1,
         before: false,
         code: "x = 42",
-        autoFocus: false,
+        autoFocus: true,
       });
     });
 
@@ -258,10 +245,10 @@ describe("useCellClipboard", () => {
       };
 
       const mockItem = {
-        types: ["application/x-marimo-cell"],
+        types: ["web application/x-marimo-cell"],
         getType: vi.fn().mockResolvedValue(
           new Blob([JSON.stringify(clipboardData)], {
-            type: "application/x-marimo-cell",
+            type: "web application/x-marimo-cell",
           }),
         ),
       };
@@ -275,23 +262,23 @@ describe("useCellClipboard", () => {
       });
 
       expect(mockCreateNewCell).toHaveBeenCalledTimes(3);
-      expect(mockCreateNewCell).toHaveBeenNthCalledWith(1, {
+      expect(mockCreateNewCell).toHaveBeenNthCalledWith(3, {
         cellId: mockCellId1,
         before: false,
         code: "x = 42",
-        autoFocus: false,
+        autoFocus: true,
       });
       expect(mockCreateNewCell).toHaveBeenNthCalledWith(2, {
         cellId: mockCellId1,
         before: false,
         code: "y = x * 2",
-        autoFocus: false,
+        autoFocus: true,
       });
-      expect(mockCreateNewCell).toHaveBeenNthCalledWith(3, {
+      expect(mockCreateNewCell).toHaveBeenNthCalledWith(1, {
         cellId: mockCellId1,
         before: false,
         code: "print(y)",
-        autoFocus: false,
+        autoFocus: true,
       });
     });
 
@@ -320,10 +307,10 @@ describe("useCellClipboard", () => {
 
     it("should handle invalid clipboard data gracefully", async () => {
       const mockItem = {
-        types: ["application/x-marimo-cell"],
+        types: ["web application/x-marimo-cell"],
         getType: vi.fn().mockResolvedValue(
           new Blob(["invalid json"], {
-            type: "application/x-marimo-cell",
+            type: "web application/x-marimo-cell",
           }),
         ),
       };
@@ -361,7 +348,7 @@ describe("useCellClipboard", () => {
 
       expect(toast).toHaveBeenCalledWith({
         title: "Nothing to paste",
-        description: "No cell or text found in clipboard",
+        description: "No cell or text found in clipboard.",
         variant: "danger",
       });
     });
@@ -398,7 +385,7 @@ describe("useCellClipboard", () => {
 
       expect(toast).toHaveBeenCalledWith({
         title: "Nothing to paste",
-        description: "No cell or text found in clipboard",
+        description: "No cell or text found in clipboard.",
         variant: "danger",
       });
     });
@@ -410,10 +397,10 @@ describe("useCellClipboard", () => {
       };
 
       const mockItem = {
-        types: ["application/x-marimo-cell"],
+        types: ["web application/x-marimo-cell"],
         getType: vi.fn().mockResolvedValue(
           new Blob([JSON.stringify(clipboardData)], {
-            type: "application/x-marimo-cell",
+            type: "web application/x-marimo-cell",
           }),
         ),
       };
@@ -446,10 +433,10 @@ describe("useCellClipboard", () => {
       };
 
       const mockItem = {
-        types: ["application/x-marimo-cell"],
+        types: ["web application/x-marimo-cell"],
         getType: vi.fn().mockResolvedValue(
           new Blob([JSON.stringify(clipboardData)], {
-            type: "application/x-marimo-cell",
+            type: "web application/x-marimo-cell",
           }),
         ),
       };

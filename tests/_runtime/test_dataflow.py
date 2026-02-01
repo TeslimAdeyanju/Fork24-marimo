@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import partial
+from unittest.mock import patch
 
 import pytest
 
@@ -564,6 +565,63 @@ class TestSQL:
             "3": set(),
         }
 
+    def test_redefine_sql_table_diff_schema(self):
+        graph = dataflow.DirectedGraph()
+        code = "t1 = 123"
+        first_cell = parse_cell(code)
+        graph.register_cell("0", first_cell)
+
+        code = 'df = mo.sql("CREATE TABLE schema1.t1 (i INTEGER, j INTEGER)")'
+        second_cell = parse_cell(code)
+        graph.register_cell("1", second_cell)
+
+        assert graph.cells == {
+            "0": first_cell,
+            "1": second_cell,
+        }
+
+        # Because t1 is qualified with schema1, it is not considered multiply defined
+        multiply_defined = graph.get_multiply_defined()
+        assert multiply_defined == []
+
+    def test_sql_table_schema_to_python_ref(self):
+        graph = dataflow.DirectedGraph()
+        code = 'df = mo.sql("CREATE TABLE t1 (i INTEGER, j INTEGER)")'
+        first_cell = parse_cell(code)
+        graph.register_cell("0", first_cell)
+
+        code = "t1 = 123"
+        second_cell = parse_cell(code)
+        graph.register_cell("1", second_cell)
+
+        assert graph.cells == {
+            "0": first_cell,
+            "1": second_cell,
+        }
+
+        multiply_defined = graph.get_multiply_defined()
+        # Without the qualification, t1 is considered multiply defined
+        assert multiply_defined == ["t1"]
+
+    def test_sql_table_schema_to_python_ref_rev(self):
+        graph = dataflow.DirectedGraph()
+        code = "t1 = 123"
+        first_cell = parse_cell(code)
+        graph.register_cell("0", first_cell)
+
+        code = 'df = mo.sql("CREATE TABLE t1 (i INTEGER, j INTEGER)")'
+        second_cell = parse_cell(code)
+        graph.register_cell("1", second_cell)
+
+        assert graph.cells == {
+            "0": first_cell,
+            "1": second_cell,
+        }
+
+        multiply_defined = graph.get_multiply_defined()
+        # Without the qualification, t1 is considered multiply defined
+        assert multiply_defined == ["t1"]
+
     def test_no_sql_table_to_python_ref(self):
         graph = dataflow.DirectedGraph()
         code = 'df = mo.sql("CREATE TABLE t1 (i INTEGER, j INTEGER)")'
@@ -612,6 +670,25 @@ class TestSQL:
         assert graph.parents == {"0": set(), "1": set(["0"])}
         assert graph.children == {"0": set(["1"]), "1": set([])}
 
+        assert graph.get_referring_cells("df", language="python") == set(["1"])
+
+    def test_sql_creation_and_select_from_same_cell(self):
+        graph = dataflow.DirectedGraph()
+        code = "df = mo.sql('CREATE TABLE t1 (i INTEGER); SELECT * FROM t1')"
+        first_cell = parse_cell(code)
+        graph.register_cell("0", first_cell)
+
+        code = "df"
+        second_cell = parse_cell(code)
+        graph.register_cell("1", second_cell)
+
+        assert graph.cells == {
+            "0": first_cell,
+            "1": second_cell,
+        }
+
+        assert graph.parents == {"0": set(), "1": set(["0"])}
+        assert graph.children == {"0": set(["1"]), "1": set([])}
         assert graph.get_referring_cells("df", language="python") == set(["1"])
 
     def test_get_referring_cells_sql_and_python(self) -> None:
@@ -676,6 +753,24 @@ class TestSQL:
             graph.get_referring_cells("nonexistent", language="python")
             == set()
         )
+
+    def test_referring_cells_sql_and_python(self) -> None:
+        graph = dataflow.DirectedGraph()
+        code = 'df = mo.sql("select * from my_schema.my_table")'
+        first_cell = parse_cell(code)
+        assert first_cell.refs == {"mo", "my_schema.my_table"}
+
+        graph.register_cell("0", first_cell)
+
+        # my_table should not be passed in as a reference to sql cell
+        code = "df; my_table = ..."
+        second_cell = parse_cell(code)
+        graph.register_cell("1", second_cell)
+
+        assert (
+            graph.get_referring_cells("my_table", language="python") == set()
+        )
+        assert not graph.cycles
 
     def test_attached_db(self):
         graph = dataflow.DirectedGraph()
@@ -974,6 +1069,44 @@ def test_cycles() -> None:
     assert not graph.cycles
 
 
+def test_del_del_cycle():
+    """Two variables that delete the same variable form a cycle."""
+    graph = dataflow.DirectedGraph()
+
+    graph.register_cell("0", parse_cell("del x"))
+    graph.register_cell("1", parse_cell("del x"))
+    assert len(graph.cycles) == 1
+    assert set(list(graph.cycles)[0]) == set((("0", "1"), ("1", "0")))
+
+
+def test_del_ref_cycle():
+    """One cell deletes a variable and defines another, the other refs both."""
+    graph = dataflow.DirectedGraph()
+
+    graph.register_cell("0", parse_cell("x = 1"))
+    graph.register_cell("1", parse_cell("del x; y = 1"))
+    graph.register_cell("2", parse_cell("z = x + y"))
+    assert len(graph.cycles) == 1
+    assert set(list(graph.cycles)[0]) == set([("1", "2"), ("2", "1")])
+
+
+def test_del_child_of_ref():
+    """Cells that delete a variable become a child of cells that reference it."""
+    graph = dataflow.DirectedGraph()
+
+    graph.register_cell("0", parse_cell("del x"))
+    graph.register_cell("1", parse_cell("x"))
+    graph.register_cell("2", parse_cell("x = 1"))
+    assert graph.parents["0"] == set(["1", "2"])
+    assert graph.children["0"] == set()
+
+    assert graph.parents["1"] == set(["2"])
+    assert graph.children["1"] == set(["0"])
+
+    assert graph.parents["2"] == set([])
+    assert graph.children["2"] == set(["0", "1"])
+
+
 def test_get_path() -> None:
     """Test the get_path method."""
     graph = dataflow.DirectedGraph()
@@ -1205,3 +1338,70 @@ def public_func():
 
     # Private variable shouldn't appear directly
     assert "_private_var" not in refs
+
+
+def test_directed_graph_copy() -> None:
+    """Test DirectedGraph.copy() method for recompiling cells with filename."""
+    graph = dataflow.DirectedGraph()
+
+    # Create some cells
+    code = "import marimo as mo"
+    cell1 = parse_cell(code)
+
+    graph.register_cell("0", cell1)
+
+    # Mock compile_cell to verify it's called with filename
+    with patch("marimo._ast.compiler.compile_cell") as mock_compile:
+        mock_compile.return_value = parse_cell(code)
+
+        filename = "test_notebook.py"
+        copied_graph = graph.copy(filename)
+
+        # Verify compile_cell was called for each cell with filename
+        assert mock_compile.call_count == 1
+        for call in mock_compile.call_args_list:
+            assert call[1]["filename"] == filename
+
+        # Verify the copied graph has the same structure
+        assert len(copied_graph.cells) == 1
+        assert set(copied_graph.cells.keys()) == {"0"}
+
+        # Verify import workspace data is preserved
+        for cell_id in copied_graph.cells:
+            original_cell = graph.cells[cell_id]
+            copied_cell = copied_graph.cells[cell_id]
+            assert (
+                copied_cell.import_workspace.imported_defs
+                == original_cell.import_workspace.imported_defs
+            )
+            assert (
+                copied_cell.import_workspace.is_import_block
+                == original_cell.import_workspace.is_import_block
+            )
+
+
+def test_directed_graph_copy_no_filename() -> None:
+    """Test DirectedGraph.copy() method without filename."""
+    graph = dataflow.DirectedGraph()
+
+    # Create a cell
+    code = "y = x + 1"
+    cell1 = parse_cell(code)
+    graph.register_cell("0", cell1)
+
+    # Mock compile_cell to verify it's called without filename
+    with patch("marimo._ast.compiler.compile_cell") as mock_compile:
+        mock_compile.return_value = parse_cell(code)
+
+        copied_graph = graph.copy(None)
+
+        # Verify compile_cell was called without filename
+        assert mock_compile.call_count == 1
+        call_args = mock_compile.call_args
+        assert (
+            "filename" not in call_args[1] or call_args[1]["filename"] is None
+        )
+
+        # Verify the copied graph has the same structure
+        assert len(copied_graph.cells) == 1
+        assert "0" in copied_graph.cells

@@ -11,47 +11,45 @@
 
 import marimo
 
-__generated_with = "0.9.1"
+__generated_with = "0.17.2"
 app = marimo.App(width="medium")
 
 
 @app.cell
-def __():
+def _():
     import marimo as mo
     return (mo,)
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        # Querying dataframes
+def _(mo):
+    mo.md("""
+    # Querying dataframes
 
-        This notebook shows how to use SQL to query Python dataframes.
+    This notebook shows how to use SQL to query Python dataframes.
 
-        First, we create a dataframe called `df`.
-        """
-    )
+    First, we create a dataframe called `df`.
+    """)
     return
 
 
 @app.cell
-def __():
+def _():
     from vega_datasets import data
 
     df = data.iris()
     df.head()
-    return data, df
+    return
 
 
 @app.cell(hide_code=True)
-def __(mo):
+def _(mo):
     mo.md(
         f"""
         Next, we **create a SQL cell**.
-        
+
         Create a SQL cell in one of two ways:
-        
+
         1. Click the {mo.icon("lucide:database")} `SQL` button at the **bottom of your notebook**
         2. **Right-click** the {mo.icon("lucide:circle-plus")} button to the **left of a cell**, and choose `SQL`.
 
@@ -62,7 +60,7 @@ def __(mo):
 
 
 @app.cell
-def __(df, mo):
+def _(mo):
     result = mo.sql(
         f"""
         SELECT species, mean(petalLength) as meanPetalLength FROM df GROUP BY species ORDER BY meanPetalLength
@@ -72,21 +70,19 @@ def __(df, mo):
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        r"""
-        The query output is returned to Python as a dataframe (Polars if you have it installed, Pandas otherwise).
+def _(mo):
+    mo.md(r"""
+    The query output is returned to Python as a dataframe (Polars if you have it installed, Pandas otherwise).
 
-        Choose the dataframe name via the **output variable** input in the bottom-left of the cell. If the name starts with an underscore, it won't be made available to other cells.
+    Choose the dataframe name via the **output variable** input in the bottom-left of the cell. If the name starts with an underscore, it won't be made available to other cells.
 
-        In this case, we've named the output `result`.
-        """
-    )
+    In this case, we've named the output `result`.
+    """)
     return
 
 
 @app.cell
-def __(result):
+def _(result):
     result
     return
 

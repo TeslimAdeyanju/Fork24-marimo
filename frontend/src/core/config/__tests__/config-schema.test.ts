@@ -9,6 +9,7 @@ import {
 } from "../config";
 import {
   AppConfigSchema,
+  defaultUserConfig,
   type UserConfig,
   UserConfigSchema,
 } from "../config-schema";
@@ -40,17 +41,23 @@ test("another AppConfig", () => {
 });
 
 test("default UserConfig - empty", () => {
-  const defaultConfig = UserConfigSchema.parse({});
+  const defaultConfig = defaultUserConfig();
   expect(defaultConfig).toMatchInlineSnapshot(`
     {
       "ai": {
+        "inline_tooltip": false,
         "mode": "manual",
+        "models": {
+          "custom_models": [],
+          "displayed_models": [],
+        },
         "rules": "",
       },
       "completion": {
         "activate_on_typing": true,
         "copilot": false,
       },
+      "diagnostics": {},
       "display": {
         "cell_output": "above",
         "code_editor_font_size": 14,
@@ -70,6 +77,7 @@ test("default UserConfig - empty", () => {
         "overrides": {},
         "preset": "default",
       },
+      "mcp": {},
       "package_management": {
         "manager": "pip",
       },
@@ -104,13 +112,19 @@ test("default UserConfig - one level", () => {
   expect(defaultConfig).toMatchInlineSnapshot(`
     {
       "ai": {
+        "inline_tooltip": false,
         "mode": "manual",
+        "models": {
+          "custom_models": [],
+          "displayed_models": [],
+        },
         "rules": "",
       },
       "completion": {
         "activate_on_typing": true,
         "copilot": false,
       },
+      "diagnostics": {},
       "display": {
         "cell_output": "above",
         "code_editor_font_size": 14,
@@ -130,6 +144,7 @@ test("default UserConfig - one level", () => {
         "overrides": {},
         "preset": "default",
       },
+      "mcp": {},
       "package_management": {
         "manager": "pip",
       },
@@ -159,6 +174,7 @@ test("default UserConfig - one level", () => {
       runtime: {},
       display: {},
       experimental: {},
+      diagnostics: {},
     }),
   ).toEqual(UserConfigSchema.parse({}));
 });

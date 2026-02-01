@@ -9,6 +9,7 @@ import pytest
 
 from marimo._ast.app import App
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._runtime.requests import ExecuteStaleRequest
 from marimo._runtime.runtime import Kernel
 from tests.conftest import ExecReqProvider
 
@@ -503,6 +504,39 @@ class TestHash:
             assert cache2._cache.hash != cache._cache.hash
             return (cache2,)
 
+    @staticmethod
+    def test_builtins(app) -> None:
+        @app.cell
+        def _():
+            import time
+            from time import sleep
+
+            import marimo as mo
+
+            return mo, sleep, time
+
+        @app.cell
+        def _(mo, sleep):
+            @mo.cache
+            def direct():
+                _ = sleep
+                return 42
+
+            return
+
+        @app.cell
+        def _(mo, time):
+            @mo.cache
+            def module():
+                _ = time.sleep
+                return 42
+
+            return
+
+        @app.cell
+        def _(direct, module):
+            assert direct() == module(), "direct() != module()"
+
 
 class TestDataHash:
     @staticmethod
@@ -952,7 +986,54 @@ class TestDataHash:
             return (two,)
 
 
-# Skip for now, as the local branch is cache busting
+class TestCustomHash:
+    @staticmethod
+    @pytest.mark.skipif(
+        not DependencyManager.has("pydantic"),
+        reason="optional dependencies not installed",
+    )
+    @pytest.mark.skipif(
+        "sys.version_info < (3, 12) or sys.version_info >= (3, 13)"
+    )
+    async def test_pydantic_model_hash(app: App) -> None:
+        with app.setup:
+            import pydantic
+
+            import marimo as mo
+
+        @app.class_definition
+        class Model(pydantic.BaseModel):
+            a: int
+            b: str
+
+        @app.function
+        @mo.cache
+        def use_model(model: Model) -> tuple[int, str]:
+            return model.a, model.b
+
+        @app.cell
+        def _check_deterministic() -> None:
+            assert use_model.hits == 0
+            model = Model(a=1, b="test")
+            a, b = use_model(model)
+            initial_hash = use_model._last_hash
+            a, b = use_model(model)  # Cache hit
+            assert use_model.hits == 1
+            model_copy = Model(a=1, b="test")
+            A, B = use_model(model_copy)  # Cache hit, different instance
+            assert use_model.hits == 2
+            assert (a, b) == (A, B) == (1, "test")
+            assert use_model._last_hash == initial_hash
+
+        @app.cell
+        def _check_different(a: int, b: str, initial_hash: str) -> None:
+            diff_model = Model(a=2, b="test")
+            c, d = use_model(diff_model)
+            assert use_model.hits == 2
+            assert (c, d) != (a, b)
+            assert initial_hash != use_model._last_hash
+
+
 class TestDynamicHash:
     @staticmethod
     async def test_transitive_state_hash(
@@ -1309,6 +1390,8 @@ class TestSideEffects:
     async def test_side_effect_file(
         k: Kernel, exec_req: ExecReqProvider, tmp_path
     ) -> None:
+        control_requests = []
+        k.enqueue_control_request = lambda req: control_requests.append(req)  # type: ignore
         await k.run(
             [
                 exec_req.get(
@@ -1322,7 +1405,7 @@ class TestSideEffects:
 
                 hashes = []
                 """),
-                exec_req.get("""
+                r := exec_req.get("""
                 f = mo.watch.file(tmp_path_fixture / "test.txt")
                 """),
             ]
@@ -1354,7 +1437,11 @@ class TestSideEffects:
         )
         (tmp_path / "test.txt").touch()
         await asyncio.sleep(0.25)
-        await k.run([])
+        assert len(control_requests) == 1
+        assert isinstance(control_requests[0], ExecuteStaleRequest)
+        assert k.graph.cells[r.cell_id].stale
+        await k.run_stale_cells()
+
         assert not k.stdout.messages, k.stdout
         assert not k.stderr.messages, k.stderr
         v = k.globals["v"]
@@ -1368,6 +1455,8 @@ class TestSideEffects:
     async def test_side_effect_directory(
         k: Kernel, exec_req: ExecReqProvider, tmp_path
     ) -> None:
+        control_requests = []
+        k.enqueue_control_request = lambda req: control_requests.append(req)  # type: ignore
         await k.run(
             [
                 exec_req.get(
@@ -1413,6 +1502,11 @@ class TestSideEffects:
         )
         (tmp_path / "test_dir" / "test.txt").write_text("test")
         await asyncio.sleep(0.25)
+        assert len(control_requests) == 1
+        assert isinstance(control_requests[0], ExecuteStaleRequest)
+        assert k.graph.cells[r.cell_id].stale
+        await k.run_stale_cells()
+
         await k.run([])
         assert not k.stdout.messages, k.stdout
         assert not k.stderr.messages, k.stderr
@@ -1478,3 +1572,466 @@ class TestSideEffects:
         assert hashes[1] != hashes[3]
         assert hashes[0] != hashes[2]
         assert non_primitive[1] == 2 == v
+
+
+class TestWrappedFunctionCache:
+    """Test cache behavior with wrapped functions (decorators) across kernel calls."""
+
+    @staticmethod
+    async def test_decorator_hash_same_name_different_kernels(
+        k: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        """Test that decorators with same function names in different kernel calls have different hashes."""
+
+        # First kernel execution
+        cell_id = "test_cell"
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    cell_id,
+                    """
+            import functools
+            import marimo as mo
+
+            def my_decorator(func):
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    wrapper._call_count = getattr(wrapper, '_call_count', 0) + 1
+                    return func(*args, **kwargs)
+                wrapper._kernel_version = 1
+                return wrapper
+
+            @my_decorator
+            def my_function():
+                return "kernel_1"
+
+            @mo.cache
+            def cached_decorated_function():
+                return my_function()
+
+            result1 = cached_decorated_function()
+            hash1 = cached_decorated_function._last_hash
+            cache_type1 = cached_decorated_function.base_block.cache_type
+            """,
+                )
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert k.globals["result1"] == "kernel_1"
+        first_hash = k.globals["hash1"]
+        first_function = k.globals["my_function"]
+        first_cache_type = k.globals["cache_type1"]
+
+        # Second kernel execution - update the same cell with different definitions
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    cell_id,
+                    """
+            import functools
+            import marimo as mo
+
+            def my_decorator(func):
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    wrapper._call_count = getattr(wrapper, '_call_count', 0) + 1
+                    return func(*args, **kwargs)
+                wrapper._kernel_version = 2  # Different version
+                return wrapper
+
+            @my_decorator
+            def my_function():
+                return "kernel_2"  # Different return value
+
+            @mo.cache
+            def cached_decorated_function():
+                return my_function()
+
+            result2 = cached_decorated_function()
+            hash2 = cached_decorated_function._last_hash
+            cache_type2 = cached_decorated_function.base_block.cache_type
+            """,
+                )
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert k.globals["result2"] == "kernel_2"
+        second_hash = k.globals["hash2"]
+        second_function = k.globals["my_function"]
+        second_cache_type = k.globals["cache_type2"]
+
+        # Functions should be different objects despite same name
+        assert first_function is not second_function
+        assert (
+            first_function._kernel_version != second_function._kernel_version
+        )
+
+        # Should use ContentAddressed cache type since decorator is pure
+        assert first_cache_type == "ContentAddressed", (
+            f"Expected ContentAddressed, got {first_cache_type}"
+        )
+        assert second_cache_type == "ContentAddressed", (
+            f"Expected ContentAddressed, got {second_cache_type}"
+        )
+
+        # Cache hashes should be different
+        assert first_hash != second_hash, (
+            f"Expected different hashes, got {first_hash} == {second_hash}"
+        )
+
+    @staticmethod
+    async def test_impure_decorator_with_pure_function(
+        k: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        """Test impure decorator applied to pure function - decorator should dominate purity."""
+
+        # First execution with impure decorator
+        cell_id = "test_cell"
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    cell_id,
+                    """
+            import functools
+            import marimo as mo
+
+            # This will be an impure decorator (contains non-primitive objects)
+            impure_state = [object()]  # Non-primitive, makes decorator impure
+
+            def my_impure_decorator(func):
+                '''An impure decorator that depends on impure_state'''
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    # Decorator depends on impure_state
+                    wrapper._call_count = len(impure_state)
+                    return func(*args, **kwargs)
+                return wrapper
+
+            @my_impure_decorator
+            def pure_function():
+                # This function itself is pure (no external dependencies)
+                return 42
+
+            @mo.cache
+            def cached_function():
+                return pure_function()
+            """,
+                ),
+                exec_req.get_with_id(
+                    "call_cell",
+                    """
+
+            result1 = cached_function()
+            hash1 = cached_function._last_hash
+            cache_type1 = cached_function.base_block.cache_type
+            """,
+                ),
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert k.globals["result1"] == 42
+        first_hash = k.globals["hash1"]
+        first_cache_type = k.globals["cache_type1"]
+
+        # Second execution - change the impure decorator state
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    cell_id,
+                    """
+            import functools
+            import marimo as mo
+
+            # Different impure state (different length)
+            impure_state = [object(), object()]  # Different length affects decorator
+
+            def my_impure_decorator(func):
+                '''Same impure decorator with different state'''
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    # Decorator depends on impure_state (now different)
+                    wrapper._call_count = len(impure_state)
+                    return func(*args, **kwargs)
+                return wrapper
+
+            @my_impure_decorator
+            def pure_function():
+                # Same pure function
+                return 42
+
+            @mo.cache
+            def cached_function():
+                return pure_function()
+            """,
+                ),
+                exec_req.get_with_id(
+                    "call_cell",
+                    """
+
+            result2 = cached_function()
+            hash2 = cached_function._last_hash
+            cache_type2 = cached_function.base_block.cache_type
+            """,
+                ),
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert (
+            k.globals["result2"] == 42
+        )  # Same result since pure_function unchanged
+        second_hash = k.globals["hash2"]
+        second_cache_type = k.globals["cache_type2"]
+
+        # The decorated function should be treated as impure due to impure decorator
+        # ContextExecutionPath, but since decorated ExecutionPath
+        assert first_cache_type == "ExecutionPath", (
+            f"Expected ExecutionPath, got {first_cache_type}"
+        )
+        assert second_cache_type == "ExecutionPath", (
+            f"Expected ExecutionPath, got {second_cache_type}"
+        )
+
+        # Hashes should be different because the decorator's dependencies changed
+        # (even though the underlying pure function is the same)
+        assert first_hash != second_hash, (
+            f"Expected different hashes for different decorator dependencies, "
+            f"got {first_hash} == {second_hash}"
+        )
+
+    @staticmethod
+    async def test_pure_decorator_with_impure_dependencies_different_cells(
+        k: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        """Test impure dependencies in different cells (should be execution refs)."""
+
+        # First execution - setup dependencies in separate cells
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    "dep_cell",
+                    """
+            import functools
+
+            # This will be an impure dependency (contains non-primitive objects)
+            impure_dependency = [object()]  # Non-primitive, makes it impure
+
+            def my_pure_decorator(func):
+                '''A pure decorator from external module perspective'''
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    return func(*args, **kwargs)
+                return wrapper
+            """,
+                ),
+                exec_req.get_with_id(
+                    "func_cell",
+                    """
+            @my_pure_decorator
+            def decorated_function():
+                # This function depends on impure_dependency from another cell
+                return len(impure_dependency)
+            """,
+                ),
+                exec_req.get_with_id(
+                    "cache_cell",
+                    """
+            import marimo as mo
+
+            @mo.cache
+            def cached_function():
+                return decorated_function()
+
+            result1 = cached_function()
+            hash1 = cached_function._last_hash
+            cache_type1 = cached_function.base_block.cache_type
+            """,
+                ),
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert k.globals["result1"] == 1
+        first_hash = k.globals["hash1"]
+        first_cache_type = k.globals["cache_type1"]
+
+        # Second execution - change the impure dependency in separate cell
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    "dep_cell",
+                    """
+            import functools
+
+            # Different impure dependency (different object, different length)
+            impure_dependency = [object(), object()]  # Different length
+
+            def my_pure_decorator(func):
+                '''Same pure decorator'''
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    return func(*args, **kwargs)
+                return wrapper
+            """,
+                ),
+                exec_req.get_with_id(
+                    "func_cell",
+                    """
+            @my_pure_decorator
+            def decorated_function():
+                # Same function, but now depends on different impure_dependency
+                return len(impure_dependency)
+            """,
+                ),
+                exec_req.get_with_id(
+                    "cache_cell",
+                    """
+            import marimo as mo
+
+            @mo.cache
+            def cached_function():
+                return decorated_function()
+
+            result2 = cached_function()
+            hash2 = cached_function._last_hash
+            cache_type2 = cached_function.base_block.cache_type
+            """,
+                ),
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert (
+            k.globals["result2"] == 2
+        )  # Different result due to different dependency
+        second_hash = k.globals["hash2"]
+        second_cache_type = k.globals["cache_type2"]
+
+        # Should use ExecutionPath hashing since dependencies are in different cells
+        assert first_cache_type == "ExecutionPath", (
+            f"Expected ExecutionPath, got {first_cache_type}"
+        )
+        assert second_cache_type == "ExecutionPath", (
+            f"Expected ExecutionPath, got {second_cache_type}"
+        )
+
+        # Hashes should be different because the execution path changed
+        # (due to different cells being hashed)
+        assert first_hash != second_hash, (
+            f"Expected different hashes for different cell dependencies, "
+            f"got {first_hash} == {second_hash}"
+        )
+
+    @staticmethod
+    async def test_pure_decorator_with_impure_dependencies(
+        k: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        """Test the impure edge case: decorator is pure but dependent functions are not."""
+
+        # First execution with impure dependency
+        cell_id = "test_cell"
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    cell_id,
+                    """
+            import functools
+            import marimo as mo
+
+            # This will be an impure dependency (contains non-primitive objects)
+            impure_dependency = [object()]  # Non-primitive, makes it impure
+
+            def my_pure_decorator(func):
+                '''A pure decorator from external module perspective'''
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    return func(*args, **kwargs)
+                return wrapper
+
+            @my_pure_decorator
+            def decorated_function():
+                # This function depends on impure_dependency
+                return len(impure_dependency)
+
+            @mo.cache
+            def cached_function():
+                return decorated_function()
+
+            result1 = cached_function()
+            hash1 = cached_function._last_hash
+            cache_type1 = cached_function.base_block.cache_type
+            """,
+                )
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert not k.stdout.messages, k.stdout
+
+        assert k.globals["result1"] == 1
+        first_hash = k.globals["hash1"]
+        first_cache_type = k.globals["cache_type1"]
+
+        # Second execution - change the impure dependency
+        await k.run(
+            [
+                exec_req.get_with_id(
+                    cell_id,
+                    """
+            import functools
+            import marimo as mo
+
+            # Different impure dependency (different object, different length)
+            impure_dependency = [object(), object()]  # Different length
+
+            def my_pure_decorator(func):
+                '''Same pure decorator'''
+                @functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    return func(*args, **kwargs)
+                return wrapper
+
+            @my_pure_decorator
+            def decorated_function():
+                # Same function, but now depends on different impure_dependency
+                return len(impure_dependency)
+
+            @mo.cache
+            def cached_function():
+                return decorated_function()
+
+            result2 = cached_function()
+            hash2 = cached_function._last_hash
+            cache_type2 = cached_function.base_block.cache_type
+            """,
+                )
+            ]
+        )
+
+        assert not k.stderr.messages, k.stderr
+        assert not k.stdout.messages, k.stdout
+
+        assert (
+            k.globals["result2"] == 2
+        )  # Different result due to different dependency
+        second_hash = k.globals["hash2"]
+        second_cache_type = k.globals["cache_type2"]
+
+        # The decorator itself is pure, but the function has impure dependencies
+        # This should use ExecutionPath hashing, not ContentAddressed
+        assert first_cache_type == "ExecutionPath", (
+            f"Expected ExecutionPath, got {first_cache_type}"
+        )
+        assert second_cache_type == "ExecutionPath", (
+            f"Expected ExecutionPath, got {second_cache_type}"
+        )
+
+        # Hashes should be different because the execution path changed
+        # (due to different impure_dependency)
+        assert first_hash != second_hash, (
+            f"Expected different hashes for different impure dependencies, "
+            f"got {first_hash} == {second_hash}"
+        )

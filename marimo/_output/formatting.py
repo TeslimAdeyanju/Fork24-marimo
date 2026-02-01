@@ -18,7 +18,6 @@ taking precedence over the MIME protocol.
 from __future__ import annotations
 
 import json
-import os
 import traceback
 from dataclasses import dataclass
 from html import escape
@@ -29,7 +28,7 @@ from marimo._messaging.mimetypes import KnownMimeType
 from marimo._output.builder import h
 from marimo._output.formatters.repr_formatters import maybe_get_repr_formatter
 from marimo._output.formatters.utils import src_or_src_doc
-from marimo._output.hypertext import Html
+from marimo._output.hypertext import Html, is_no_js
 from marimo._output.rich_help import mddoc
 from marimo._output.utils import flatten_string
 from marimo._plugins.core.media import io_to_data_url
@@ -42,9 +41,52 @@ T = TypeVar("T")
 
 # we use Tuple instead of the builtin tuple for py3.8 compatibility
 Formatter = Callable[[T], tuple[KnownMimeType, str]]
-FORMATTERS: dict[type[Any], Formatter[Any]] = {}
-OPINIONATED_FORMATTERS: dict[type[Any], Formatter[Any]] = {}
+
 LOGGER = loggers.marimo_logger()
+
+
+class FormatterRegistry:
+    def __init__(self) -> None:
+        self.formatters: dict[type[Any], Formatter[Any]] = {}
+
+    def is_empty(self) -> bool:
+        return not self.formatters
+
+    def add_formatter(self, t: type[Any], f: Formatter[Any]) -> None:
+        self.formatters[t] = f
+
+    def get_formatter(self, obj: Any) -> Optional[Formatter[Any]]:
+        top_level_type = type(obj)
+        # Top-level formatters
+        if top_level_type in self.formatters:
+            return self.formatters[top_level_type]
+
+        # If it's a type, we don't want to format it
+        if isinstance(obj, type):
+            return None
+
+        # Search for formatters in the object's type hierarchy
+        try:
+            mro_list = top_level_type.mro()
+        except BaseException as e:  # noqa: E722
+            # Some exotic metaclasses or broken types may raise when calling mro
+            LOGGER.warning(
+                "Failed to read MRO for type %s: %s", top_level_type, str(e)
+            )
+            return None
+
+        for t in mro_list:
+            if t in self.formatters:
+                formatter = self.formatters[t]
+                # Add to formatters dict to avoid re-searching
+                self.formatters[top_level_type] = formatter
+                return formatter
+
+        return None
+
+
+FORMATTERS = FormatterRegistry()
+OPINIONATED_FORMATTERS = FormatterRegistry()
 
 
 def formatter(t: type[Any]) -> Callable[[Formatter[T]], Formatter[T]]:
@@ -63,7 +105,7 @@ def formatter(t: type[Any]) -> Callable[[Formatter[T]], Formatter[T]]:
     """
 
     def register_format(f: Formatter[T]) -> Formatter[T]:
-        FORMATTERS[t] = f
+        FORMATTERS.add_formatter(t, f)
         return f
 
     return register_format
@@ -87,7 +129,7 @@ def opinionated_formatter(
     """
 
     def register_format(f: Formatter[T]) -> Formatter[T]:
-        OPINIONATED_FORMATTERS[t] = f
+        OPINIONATED_FORMATTERS.add_formatter(t, f)
         return f
 
     return register_format
@@ -104,7 +146,7 @@ def get_formatter(
     try:
         get_context()
     except ContextNotInitializedError:
-        if not FORMATTERS:
+        if FORMATTERS.is_empty():
             from marimo._output.formatters.formatters import (
                 register_formatters,
             )
@@ -115,9 +157,7 @@ def get_formatter(
 
     # If not explicitly opinionated, we defer to the environment.
     if include_opinionated is None:
-        include_opinionated = (
-            os.getenv("MARIMO_NO_JS", "false").lower() == "false"
-        )
+        include_opinionated = not is_no_js()
 
     # Plain opts out of opinionated formatters
     if isinstance(obj, Plain):
@@ -134,7 +174,7 @@ def get_formatter(
     if is_callable_method(obj, "_display_"):
 
         def f_mime(obj: T) -> tuple[KnownMimeType, str]:
-            displayable_object = obj._display_()  # type: ignore
+            displayable_object: Any = obj._display_()  # type: ignore
             _f = get_formatter(displayable_object)
             if _f is not None:
                 return _f(displayable_object)
@@ -145,17 +185,13 @@ def get_formatter(
 
     # Formatters dict gets precedence
     if include_opinionated:
-        if type(obj) in OPINIONATED_FORMATTERS:
-            return OPINIONATED_FORMATTERS[type(obj)]
+        formatter = OPINIONATED_FORMATTERS.get_formatter(obj)
+        if formatter:
+            return formatter
 
-    if type(obj) in FORMATTERS:
-        return FORMATTERS[type(obj)]
-    elif any(isinstance(obj, t) for t in FORMATTERS.keys()):
-        # we avoid using the walrus operator (matched_type := t) above
-        # to keep compatibility with Python < 3.8
-        for t in FORMATTERS.keys():
-            if isinstance(obj, t):
-                return FORMATTERS[t]
+    formatter = FORMATTERS.get_formatter(obj)
+    if formatter:
+        return formatter
 
     # Check for the MIME protocol
     if is_callable_method(obj, "_mime_"):
@@ -306,6 +342,8 @@ def mime_to_html(mimetype: KnownMimeType, data: Any) -> Html:
         # Flatten the HTML text to avoid indentation issues
         # when interpolating into markdown/a multiline string
         return Html(flatten_string(f"<span>{escape(data)}</span>"))
+    elif mimetype == "image/svg+xml":
+        return Html(data)
     elif mimetype.startswith("image"):
         return Html(flatten_string(f'<img src="{data}" alt="" />'))
     elif mimetype == "application/json":

@@ -1,7 +1,8 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { useForm } from "react-hook-form";
+import type { z } from "zod";
 import {
   Form,
   FormControl,
@@ -13,7 +14,8 @@ import {
 } from "@/components/ui/form";
 import { useAppConfig } from "@/core/config/config";
 import { getAppWidths } from "@/core/config/widths";
-import { saveAppConfig } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
+import { useDebouncedCallback } from "@/hooks/useDebounce";
 import { arrayToggle } from "@/utils/arrays";
 import {
   type AppConfig,
@@ -32,12 +34,19 @@ import {
   SQL_OUTPUT_SELECT_OPTIONS,
 } from "./common";
 
+const FORM_DEBOUNCE = 100; // ms;
+
 export const AppConfigForm: React.FC = () => {
   const [config, setConfig] = useAppConfig();
+  const { saveAppConfig } = useRequestClient();
+  const htmlCheckboxId = useId();
+  const ipynbCheckboxId = useId();
 
   // Create form
-  const form = useForm<AppConfig>({
-    resolver: zodResolver(AppConfigSchema),
+  const form = useForm({
+    resolver: zodResolver(
+      AppConfigSchema as unknown as z.ZodType<unknown, AppConfig>,
+    ),
     defaultValues: config,
   });
 
@@ -51,6 +60,10 @@ export const AppConfigForm: React.FC = () => {
       });
   };
 
+  const debouncedSubmit = useDebouncedCallback((v: AppConfig) => {
+    onSubmit(v);
+  }, FORM_DEBOUNCE);
+
   // When width is changed, dispatch a resize event so widgets know to resize
   useEffect(() => {
     window.dispatchEvent(new Event("resize"));
@@ -59,7 +72,7 @@ export const AppConfigForm: React.FC = () => {
   return (
     <Form {...form}>
       <form
-        onChange={form.handleSubmit(onSubmit)}
+        onChange={form.handleSubmit(debouncedSubmit)}
         className="flex flex-col gap-6"
       >
         <div>
@@ -138,7 +151,7 @@ export const AppConfigForm: React.FC = () => {
               render={({ field }) => (
                 <div className="flex flex-col gap-y-1">
                   <FormItem className="flex flex-row items-center space-x-1 space-y-0">
-                    <FormLabel className="flex-shrink-0">Custom CSS</FormLabel>
+                    <FormLabel className="shrink-0">Custom CSS</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
@@ -169,7 +182,7 @@ export const AppConfigForm: React.FC = () => {
               render={({ field }) => (
                 <div className="flex flex-col gap-y-1">
                   <FormItem className="flex flex-row items-center space-x-1 space-y-0">
-                    <FormLabel className="flex-shrink-0">HTML Head</FormLabel>
+                    <FormLabel className="shrink-0">HTML Head</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
@@ -252,23 +265,25 @@ export const AppConfigForm: React.FC = () => {
                       <div className="flex gap-4">
                         <div className="flex items-center space-x-2">
                           <Checkbox
-                            id="html-checkbox"
+                            id={htmlCheckboxId}
+                            data-testid="html-checkbox"
                             checked={field.value.includes("html")}
                             onCheckedChange={() => {
                               field.onChange(arrayToggle(field.value, "html"));
                             }}
                           />
-                          <FormLabel htmlFor="html-checkbox">HTML</FormLabel>
+                          <FormLabel htmlFor={htmlCheckboxId}>HTML</FormLabel>
                         </div>
                         <div className="flex items-center space-x-2">
                           <Checkbox
-                            id="ipynb-checkbox"
+                            id={ipynbCheckboxId}
+                            data-testid="ipynb-checkbox"
                             checked={field.value.includes("ipynb")}
                             onCheckedChange={() => {
                               field.onChange(arrayToggle(field.value, "ipynb"));
                             }}
                           />
-                          <FormLabel htmlFor="ipynb-checkbox">IPYNB</FormLabel>
+                          <FormLabel htmlFor={ipynbCheckboxId}>IPYNB</FormLabel>
                         </div>
                       </div>
                     </FormControl>

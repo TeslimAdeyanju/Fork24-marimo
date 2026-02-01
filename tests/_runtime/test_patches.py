@@ -13,6 +13,7 @@ from marimo._runtime.capture import capture_stderr
 from marimo._runtime.patches import patch_polars_write_json
 from marimo._runtime.runtime import Kernel
 from marimo._utils.platform import is_pyodide
+from tests._messaging.mocks import MockStream
 from tests.conftest import ExecReqProvider
 
 if TYPE_CHECKING:
@@ -30,6 +31,21 @@ class TestMicropip:
     ) -> None:
         await executing_kernel.run([exec_req.get("import micropip")])
         assert "micropip" in executing_kernel.globals
+
+    @staticmethod
+    async def test_micropip_once(
+        executing_kernel: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        await executing_kernel.run([exec_req.get("import sys")])
+        assert (
+            executing_kernel.globals["sys"].meta_path[-1].__class__.__name__
+            == "_MicropipFinder"
+        )
+        # Double patched at this point, barring explicit fix.
+        assert (
+            executing_kernel.globals["sys"].meta_path[-2].__class__.__name__
+            != "_MicropipFinder"
+        )
 
     @staticmethod
     async def test_micropip_install(
@@ -153,9 +169,10 @@ async def test_webbrowser_injection(
     )
     assert "webbrowser" in mocked_kernel.k.globals
     outputs: list[str] = []
-    for msg in mocked_kernel.stream.messages:
-        if msg[0] == "cell-op" and msg[1]["output"] is not None:
-            outputs.append(msg[1]["output"]["data"])
+    stream = MockStream(mocked_kernel.stream)
+    for msg in stream.operations:
+        if msg["op"] == "cell-op" and msg["output"] is not None:
+            outputs.append(msg["output"]["data"])
 
     assert "<iframe" in outputs[-1]
 
@@ -181,9 +198,10 @@ async def test_webbrowser_easter_egg(
     )
     assert "antigravity" in mocked_kernel.k.globals
     outputs: list[str] = []
-    for msg in mocked_kernel.stream.messages:
-        if msg[0] == "cell-op" and msg[1]["output"] is not None:
-            outputs.append(msg[1]["output"]["data"])
+    stream = MockStream(mocked_kernel.stream)
+    for msg in stream.operations:
+        if msg["op"] == "cell-op" and msg["output"] is not None:
+            outputs.append(msg["output"]["data"])
 
     assert "<iframe" not in outputs[-1]
     assert "<img" in outputs[-1]

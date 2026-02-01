@@ -14,6 +14,7 @@ else:
     from typing import NotRequired
 
 from typing import (
+    TYPE_CHECKING,
     Any,
     Literal,
     Optional,
@@ -40,9 +41,6 @@ class CompletionConfig(TypedDict):
     until the completion hotkey is entered
     - `copilot`: one of `"github"`, `"codeium"`, or `"custom"`
     - `codeium_api_key`: the Codeium API key
-    - `api_key`: the API key for the LLM provider, when `copilot` is `"custom"`
-    - `model`: the model to use, when `copilot` is `"custom"`
-    - `base_url`: the base URL for the API, when `copilot` is `"custom"`
     """
 
     activate_on_typing: bool
@@ -51,7 +49,7 @@ class CompletionConfig(TypedDict):
     # Codeium
     codeium_api_key: NotRequired[Optional[str]]
 
-    # Custom
+    # @deprecated: use `ai.models.autocomplete_model` instead
     api_key: NotRequired[Optional[str]]
     model: NotRequired[Optional[str]]
     base_url: NotRequired[Optional[str]]
@@ -103,6 +101,7 @@ WidthType = Literal["normal", "compact", "medium", "full", "columns"]
 Theme = Literal["light", "dark", "system"]
 ExportType = Literal["html", "markdown", "ipynb"]
 SqlOutputType = Literal["polars", "lazy-polars", "pandas", "native", "auto"]
+StoreKey = Literal["file", "redis", "rest", "tiered"]
 
 
 @mddoc
@@ -176,6 +175,7 @@ class DisplayConfig(TypedDict):
     - `default_table_page_size`: default number of rows to display in tables
     - `default_table_max_columns`: default maximum number of columns to display in tables
     - `reference_highlighting`: if `True`, highlight reactive variable references
+    - `locale`: locale for date formatting and internationalization (e.g., "en-US", "en-GB", "de-DE")
     """
 
     theme: Theme
@@ -187,6 +187,7 @@ class DisplayConfig(TypedDict):
     default_table_page_size: int
     default_table_max_columns: int
     reference_highlighting: NotRequired[bool]
+    locale: NotRequired[Optional[str]]
 
 
 @mddoc
@@ -230,7 +231,29 @@ class PackageManagementConfig(TypedDict):
     manager: Literal["pip", "rye", "uv", "poetry", "pixi"]
 
 
-CopilotMode = Literal["ask", "manual"]
+CopilotMode = Literal["ask", "manual", "agent"]
+
+
+@mddoc
+@dataclass
+class AiModelConfig(TypedDict):
+    """Configuration options for an AI model.
+
+    **Keys.**
+
+    - `chat_model`: the model to use for chat completions
+    - `edit_model`: the model to use for edit completions
+    - `autocomplete_model`: the model to use for code completion/autocomplete
+    - `displayed_models`: a list of models to display in the UI
+    - `custom_models`: a list of custom models to use that are not from the default list
+    """
+
+    chat_model: NotRequired[str]
+    edit_model: NotRequired[str]
+    autocomplete_model: NotRequired[str]
+
+    displayed_models: list[str]
+    custom_models: list[str]
 
 
 @dataclass
@@ -242,19 +265,37 @@ class AiConfig(TypedDict, total=False):
     - `rules`: custom rules to include in all AI completion prompts
     - `max_tokens`: the maximum number of tokens to use in AI completions
     - `mode`: the mode to use for AI completions. Can be one of: `"ask"` or `"manual"`
+    - `inline_tooltip`: if `True`, enable inline AI tooltip suggestions
+    - `models`: the models to use for AI completions
     - `open_ai`: the OpenAI config
     - `anthropic`: the Anthropic config
     - `google`: the Google AI config
     - `bedrock`: the Bedrock config
+    - `azure`: the Azure config
+    - `ollama`: the Ollama config
+    - `github`: the GitHub config
+    - `openrouter`: the OpenRouter config
+    - `wandb`: the Weights & Biases config
+    - `open_ai_compatible`: the OpenAI-compatible config
     """
 
     rules: NotRequired[str]
     max_tokens: NotRequired[int]
     mode: NotRequired[CopilotMode]
+    inline_tooltip: NotRequired[bool]
+    models: AiModelConfig
+
+    # providers
     open_ai: OpenAiConfig
     anthropic: AnthropicConfig
     google: GoogleAiConfig
     bedrock: BedrockConfig
+    azure: OpenAiConfig
+    ollama: OpenAiConfig
+    github: GitHubConfig
+    openrouter: OpenAiConfig
+    wandb: OpenAiConfig
+    open_ai_compatible: OpenAiConfig
 
 
 @dataclass
@@ -264,20 +305,24 @@ class OpenAiConfig(TypedDict, total=False):
     **Keys.**
 
     - `api_key`: the OpenAI API key
-    - `model`: the model to use.
-        if model starts with `claude-` we use the AnthropicConfig
     - `base_url`: the base URL for the API
+    - `project`: the project ID for the OpenAI API
     - `ssl_verify` : Boolean argument for httpx passed to open ai client. httpx defaults to true, but some use cases to let users override to False in some testing scenarios
     - `ca_bundle_path`: custom ca bundle to be used for verifying SSL certificates. Used to create custom SSL context for httpx client
     - `client_pem` : custom path of a client .pem cert used for verifying identity of client server
+    - `extra_headers`: extra headers to be passed to the OpenAI client
     """
 
     api_key: str
-    model: NotRequired[str]
     base_url: NotRequired[str]
+    project: NotRequired[str]
     ssl_verify: NotRequired[bool]
     ca_bundle_path: NotRequired[str]
     client_pem: NotRequired[str]
+    extra_headers: NotRequired[dict[str, str]]
+
+    # @deprecated: use `ai.models.chat_model` instead
+    model: NotRequired[str]
 
 
 @dataclass
@@ -323,6 +368,20 @@ class BedrockConfig(TypedDict, total=False):
 
 
 @dataclass
+class GitHubConfig(TypedDict, total=False):
+    """Configuration options for GitHub.
+
+    **Keys.**
+
+    - `api_key`: the GitHub API token
+    - `base_url`: the base URL for the API
+    """
+
+    api_key: str
+    base_url: NotRequired[str]
+
+
+@dataclass
 class PythonLanguageServerConfig(TypedDict, total=False):
     """
     Configuration options for Python Language Server.
@@ -337,6 +396,18 @@ class PythonLanguageServerConfig(TypedDict, total=False):
     enable_pydocstyle: bool
     enable_pylint: bool
     enable_pyflakes: bool
+
+
+@dataclass
+class BasedpyrightServerConfig(TypedDict, total=False):
+    """
+    Configuration options for basedpyright Language Server.
+
+    basedpyright handles completion, hover, go-to-definition, and diagnostics,
+    but we only use it for diagnostics.
+    """
+
+    enabled: bool
 
 
 @dataclass
@@ -361,6 +432,7 @@ class LanguageServersConfig(TypedDict, total=False):
     """
 
     pylsp: PythonLanguageServerConfig
+    basedpyright: BasedpyrightServerConfig
     ty: TyLanguageServerConfig
 
 
@@ -371,9 +443,11 @@ class DiagnosticsConfig(TypedDict, total=False):
     **Keys.**
 
     - `enabled`: if `True`, diagnostics will be shown in the editor
+    - `sql_linter`: if `True`, SQL cells will have linting enabled
     """
 
     enabled: bool
+    sql_linter: bool
 
 
 @dataclass
@@ -420,6 +494,40 @@ class SharingConfig(TypedDict):
     wasm: NotRequired[bool]
 
 
+@dataclass
+class StoreConfig(TypedDict, total=False):
+    """Configuration for cache stores."""
+
+    type: StoreKey
+    args: dict[str, Any]
+
+
+CacheConfig = Union[list[StoreConfig], StoreConfig]
+
+
+class ExperimentalConfig(TypedDict, total=False):
+    """
+    Configuration for experimental features.
+
+    Features exposed on the frontend must match the frontend config.
+    """
+
+    markdown: bool  # Used in playground (community cloud)
+    wasm_layouts: bool  # Used in playground (community cloud)
+    rtc_v2: bool
+    performant_table_charts: bool
+    chat_modes: bool
+
+    # Internal features
+    cache: CacheConfig
+    execution_type: ExecutionType
+
+
+# Prefer to accept any dict since feature flags can change frequently
+# But maintain type safety for known flags
+ExperimentalConfigType = dict[str, Any]
+
+
 @mddoc
 @dataclass
 class MarimoConfig(TypedDict):
@@ -436,12 +544,11 @@ class MarimoConfig(TypedDict):
     ai: NotRequired[AiConfig]
     language_servers: NotRequired[LanguageServersConfig]
     diagnostics: NotRequired[DiagnosticsConfig]
-    experimental: NotRequired[dict[str, Any]]
+    experimental: NotRequired[ExperimentalConfigType]
     snippets: NotRequired[SnippetsConfig]
     datasources: NotRequired[DatasourcesConfig]
     sharing: NotRequired[SharingConfig]
-    # We don't support configuring MCP servers yet
-    # mcp: NotRequired[MCPConfig]
+    mcp: NotRequired[MCPConfig]
 
 
 @mddoc
@@ -467,7 +574,12 @@ class MCPServerStreamableHttpConfig(TypedDict):
     disabled: NotRequired[Optional[bool]]
 
 
-MCPServerConfig = Union[MCPServerStdioConfig, MCPServerStreamableHttpConfig]
+if TYPE_CHECKING:
+    MCPServerConfig = Union[
+        MCPServerStdioConfig, MCPServerStreamableHttpConfig
+    ]
+else:
+    MCPServerConfig = dict[str, Any]
 
 
 @mddoc
@@ -481,16 +593,7 @@ class MCPConfig(TypedDict):
     """
 
     mcpServers: dict[str, MCPServerConfig]
-
-
-DEFAULT_MCP_CONFIG: MCPConfig = MCPConfig(
-    mcpServers={
-        "marimo": MCPServerStreamableHttpConfig(
-            url="https://mcp.marimo.app/mcp"
-        ),
-        # TODO(bjoaquinc): add more Marimo MCP servers here after they are implemented
-    }
-)
+    presets: NotRequired[list[Literal["marimo", "context7"]]]
 
 
 @mddoc
@@ -509,7 +612,7 @@ class PartialMarimoConfig(TypedDict, total=False):
     ai: NotRequired[AiConfig]
     language_servers: NotRequired[LanguageServersConfig]
     diagnostics: NotRequired[DiagnosticsConfig]
-    experimental: NotRequired[dict[str, Any]]
+    experimental: NotRequired[ExperimentalConfigType]
     snippets: SnippetsConfig
     datasources: NotRequired[DatasourcesConfig]
     sharing: NotRequired[SharingConfig]
@@ -520,7 +623,7 @@ DEFAULT_CONFIG: MarimoConfig = {
     "display": {
         "theme": "light",
         "code_editor_font_size": 14,
-        "cell_output": "above",
+        "cell_output": "below",
         "default_width": "medium",
         "dataframes": "rich",
         "default_table_page_size": 10,
@@ -530,7 +633,7 @@ DEFAULT_CONFIG: MarimoConfig = {
     "formatting": {"line_length": 79},
     "keymap": {"preset": "default", "overrides": {}},
     "runtime": {
-        "auto_instantiate": True,
+        "auto_instantiate": False,
         "auto_reload": "off",
         "reactive_tests": True,
         "on_cell_change": "autorun",
@@ -555,7 +658,7 @@ DEFAULT_CONFIG: MarimoConfig = {
     },
     "language_servers": {
         "pylsp": {
-            "enabled": True,
+            "enabled": False,
             "enable_mypy": True,
             "enable_ruff": True,
             "enable_flake8": False,
@@ -564,9 +667,22 @@ DEFAULT_CONFIG: MarimoConfig = {
             "enable_pyflakes": False,
         }
     },
+    "ai": {
+        "models": {
+            "displayed_models": [],
+            "custom_models": [],
+        }
+    },
     "snippets": {
         "custom_paths": [],
         "include_default_snippets": True,
+    },
+    "mcp": {
+        "mcpServers": {},
+        "presets": [],
+    },
+    "diagnostics": {
+        "sql_linter": True,
     },
 }
 

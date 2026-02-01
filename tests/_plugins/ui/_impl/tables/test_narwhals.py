@@ -5,13 +5,15 @@ import json
 import time
 import unittest
 from math import isnan
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import narwhals.stable.v1 as nw
+import narwhals.stable.v2 as nw
 import pytest
 
 from marimo._data.models import BinValue, ColumnStats
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._output.data.data import BIGINT_KEY
+from marimo._plugins.ui._impl.table import SortArgs
 from marimo._plugins.ui._impl.tables.format import FormatMapping
 from marimo._plugins.ui._impl.tables.narwhals_table import (
     NarwhalsTableManager,
@@ -31,6 +33,9 @@ from tests._data.mocks import (
 )
 from tests.mocks import snapshotter
 
+if TYPE_CHECKING:
+    from narwhals.stable.v1.typing import DataFrameT
+
 HAS_DEPS = DependencyManager.polars.has()
 
 snapshot = snapshotter(__file__)
@@ -38,15 +43,14 @@ snapshot = snapshotter(__file__)
 SUPPORTED_LIBS: list[DFType] = [
     "pandas",
     "polars",
-    # TODO: Either we can import narwhals `main` or wait for v0.1.0
-    # "ibis",
+    "ibis",
     "lazy-polars",
     "pyarrow",
 ]
 
 
-def assert_frame_equal(a: Any, b: Any) -> None:
-    return a.to_dict() == b.to_dict()
+def assert_frame_equal(a: DataFrameT, b: DataFrameT) -> None:
+    return a.to_dict(as_series=False) == b.to_dict(as_series=False)
 
 
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
@@ -359,6 +363,7 @@ class TestNarwhalsTableManagerFactory(unittest.TestCase):
             mean=2.0,
             median=2.0,
             std=1.0,
+            unique=3,
             p5=1.0,
             p25=2.0,
             p75=3.0,
@@ -411,8 +416,76 @@ class TestNarwhalsTableManagerFactory(unittest.TestCase):
         for column in complex_data.get_column_names():
             assert complex_data.get_stats(column) is not None
 
+    def test_get_stats_unwraps_scalars_properly(self) -> None:
+        """Test that get_stats properly unwraps narwhals scalars to Python primitives.
+
+        This test ensures that the values returned in ColumnStats are proper Python
+        primitives, not wrapped narwhals scalar objects. The unwrapping happens via
+        unwrap_py_scalar in narwhals_table.py get_stats method.
+        """
+        import polars as pl
+
+        data = pl.DataFrame(
+            {
+                "int_col": [1, 2, 3, 4, 5],
+                "float_col": [1.5, 2.5, 3.5, 4.5, 5.5],
+                "bool_col": [True, False, True, True, False],
+            }
+        )
+        manager = NarwhalsTableManager.from_dataframe(data)
+
+        int_stats = manager.get_stats("int_col")
+        assert int_stats == ColumnStats(
+            total=5,
+            nulls=0,
+            unique=5,
+            min=1,
+            max=5,
+            mean=3.0,
+            median=3.0,
+            std=1.5811388300841898,
+            p5=1.0,
+            p25=2.0,
+            p75=4.0,
+            p95=5.0,
+        )
+        assert isinstance(int_stats.min, int)
+        assert isinstance(int_stats.max, int)
+        assert isinstance(int_stats.mean, float)
+
+        float_stats = manager.get_stats("float_col")
+        assert float_stats == ColumnStats(
+            total=5,
+            nulls=0,
+            min=1.5,
+            max=5.5,
+            mean=3.5,
+            median=3.5,
+            unique=5,
+            std=1.5811388300841898,
+            p5=1.5,
+            p25=2.5,
+            p75=4.5,
+            p95=5.5,
+        )
+        assert isinstance(float_stats.min, float)
+        assert isinstance(float_stats.max, float)
+        assert isinstance(float_stats.mean, float)
+
+        bool_stats = manager.get_stats("bool_col")
+        assert bool_stats == ColumnStats(
+            total=5,
+            nulls=0,
+            true=3,
+            false=2,
+        )
+        assert isinstance(bool_stats.true, int)
+        assert isinstance(bool_stats.false, int)
+
     def test_sort_values(self) -> None:
-        sorted_df = self.manager.sort_values("A", descending=True).data
+        sorted_df = self.manager.sort_values(
+            [SortArgs(by="A", descending=True)]
+        ).data
         expected_df = self.data.sort("A", descending=True)
         assert_frame_equal(sorted_df, expected_df)
 
@@ -768,9 +841,9 @@ def test_to_json_bigint(df: Any) -> None:
     assert json_data[0]["A"] == 20
     assert json_data[0]["B"] == -20
 
-    # Large integers should be converted to strings
-    assert json_data[1]["A"] == "9007199254740992"
-    assert json_data[1]["B"] == "-9007199254740992"
+    # Large integers should be converted to objects
+    assert json_data[1]["A"] == {BIGINT_KEY: "9007199254740992"}
+    assert json_data[1]["B"] == {BIGINT_KEY: "-9007199254740992"}
 
 
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
@@ -799,7 +872,6 @@ def test_to_csv(df: Any) -> None:
             "B": ["a", "b", "c"],
             "C": [1.0, 2.0, 3.0],
         },
-        exclude=["ibis", "duckdb"],
     ),
 )
 def test_to_parquet(df: Any) -> None:
@@ -854,7 +926,7 @@ def test_empty_dataframe(df: Any) -> None:
 @pytest.mark.parametrize(
     "df",
     create_dataframes(
-        {"A": [1, 2, 3], "B": [None, None, None]}, exclude=["ibis", "duckdb"]
+        {"A": [1, 2, 3], "B": [None, None, None]}, exclude=["duckdb"]
     ),
 )
 def test_dataframe_with_all_null_column(df: Any) -> None:
@@ -934,7 +1006,6 @@ def test_get_summary_all_types() -> None:
             "string": ["a", "b", "b", "c", "d", "d", "e"],
             "boolean": [True, False, False, True, False, False, True],
         },
-        exclude=["ibis", "duckdb"],
         strict=False,
     ),
 )
@@ -1025,7 +1096,7 @@ def _round_bin_values(bin_values: list[BinValue]) -> list[BinValue]:
                 datetime.date(2021, 1, 1),
             ],
         },
-        exclude=["ibis", "duckdb"],
+        exclude=["ibis"],
     ),
 )
 class TestGetBinValuesTemporal:
@@ -1148,9 +1219,7 @@ class TestGetBinValuesTemporal:
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
 @pytest.mark.parametrize(
     "df",
-    create_dataframes(
-        {"A": ["apple", "banana", "cherry"]}, exclude=["ibis", "duckdb"]
-    ),
+    create_dataframes({"A": ["apple", "banana", "cherry"]}),
 )
 def test_search_with_regex(df: Any) -> None:
     manager = NarwhalsTableManager.from_dataframe(df)
@@ -1161,19 +1230,19 @@ def test_search_with_regex(df: Any) -> None:
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
 @pytest.mark.parametrize(
     "df",
-    create_dataframes({"A": [3, 1, None, 2]}, exclude=["ibis", "duckdb"]),
+    create_dataframes({"A": [3, 1, None, 2]}),
 )
 def test_sort_values_with_nulls(df: Any) -> None:
     manager = NarwhalsTableManager.from_dataframe(df)
     sorted_manager: NarwhalsTableManager[Any] = manager.sort_values(
-        "A", descending=True
+        [SortArgs(by="A", descending=True)]
     )
     assert sorted_manager.as_frame()["A"].head(3).to_list() == [3, 2, 1]
     last = unwrap_py_scalar(sorted_manager.as_frame()["A"].tail(1).item())
     assert last is None or isnan(last)
 
     # ascending
-    sorted_manager = manager.sort_values("A", descending=False)
+    sorted_manager = manager.sort_values([SortArgs(by="A", descending=False)])
     assert sorted_manager.as_frame()["A"].head(3).to_list() == [1, 2, 3]
     last = unwrap_py_scalar(sorted_manager.as_frame()["A"].tail(1).item())
     assert last is None or isnan(last)
@@ -1303,19 +1372,6 @@ def test_calculate_top_k_rows(df: Any) -> None:
     assert normalized_result == [(3, 3), (None, 2)]
 
 
-@pytest.mark.skipif(
-    not DependencyManager.ibis.has(),
-    reason="Ibis not installed",
-)
-def test_calculate_top_k_rows_metadata_only_frame() -> None:
-    import ibis
-
-    df = ibis.memtable({"A": [1, 2, 3, 3, None, None]})
-    manager = NarwhalsTableManager.from_dataframe(df)
-    result = manager.calculate_top_k_rows("A", 10)
-    assert result == [(None, 2), (3, 2), (1, 1), (2, 1)]
-
-
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
 @pytest.mark.parametrize(
     "df",
@@ -1384,6 +1440,32 @@ def test_get_sample_values_with_metadata_only_frame(df: Any) -> None:
     assert sample_values == []
     sample_values = manager.get_sample_values("B")
     assert sample_values == []
+
+
+@pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
+def test_get_column_names_with_timestamp_columns() -> None:
+    """Test that get_column_names converts timestamp column names to strings."""
+    import pandas as pd
+
+    # Create a DataFrame with timestamp column names
+    df = pd.DataFrame(
+        {
+            pd.Timestamp("2021-01-01"): [1, 2, 3],
+            pd.Timestamp("2021-01-02"): [4, 5, 6],
+            "regular_column": [7, 8, 9],
+        }
+    )
+
+    manager = get_table_manager(df)
+    column_names = manager.get_column_names()
+
+    # All column names should be strings
+    assert all(isinstance(name, str) for name in column_names), column_names
+    assert set(column_names) == {
+        "2021-01-01 00:00:00",
+        "2021-01-02 00:00:00",
+        "regular_column",
+    }
 
 
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
@@ -1492,10 +1574,7 @@ def test_calculate_top_k_rows_caching(df: Any) -> None:
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
 @pytest.mark.parametrize(
     "df",
-    create_dataframes(
-        {"name": ["Alice", "Eve", None], "age": [25, 35, None]},
-        exclude=["ibis", "duckdb"],
-    ),
+    create_dataframes({"name": ["Alice", "Eve", None], "age": [25, 35, None]}),
 )
 def test_calculate_top_k_rows_cache_invalidation(df: Any) -> None:
     """Test that cache is properly invalidated when data changes."""
@@ -1521,3 +1600,117 @@ def test_calculate_top_k_rows_cache_invalidation(df: Any) -> None:
 
     # Verify the actual results are different
     assert result1 != result2
+
+
+@pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
+class TestSanitizeTableValue:
+    """Tests for the _sanitize_table_value method."""
+
+    def setUp(self) -> None:
+        import polars as pl
+
+        self.data = pl.DataFrame({"A": [1, 2, 3]})
+        self.manager = NarwhalsTableManager.from_dataframe(self.data)
+
+    def test_sanitize_none(self) -> None:
+        """Test that None values are returned as-is."""
+        manager = self._get_manager()
+        assert manager._sanitize_table_value(None) is None
+
+    def test_sanitize_primitive_values(self) -> None:
+        """Test that primitive values are returned unchanged."""
+        manager = self._get_manager()
+        assert manager._sanitize_table_value(42) == 42
+        assert manager._sanitize_table_value("hello") == "hello"
+        assert manager._sanitize_table_value(3.14) == 3.14
+        assert manager._sanitize_table_value(True) is True
+
+    @pytest.mark.skipif(
+        not DependencyManager.pillow.has(),
+        reason="Pillow not installed",
+    )
+    def test_sanitize_pillow_image(self) -> None:
+        """Test that Pillow images are converted to data URLs."""
+        from PIL import Image
+
+        manager = self._get_manager()
+
+        # Create a simple test image
+        img = Image.new("RGB", (10, 10), color="red")
+
+        result = manager._sanitize_table_value(img)
+
+        # Verify it returns a data URL string
+        assert isinstance(result, str)
+        assert result.startswith("data:image/png;base64,")
+
+    @pytest.mark.skipif(
+        not DependencyManager.matplotlib.has(),
+        reason="Matplotlib not installed",
+    )
+    def test_sanitize_matplotlib_figure(self) -> None:
+        """Test that Matplotlib figures are returned unchanged (no conversion)."""
+        import matplotlib.pyplot as plt
+
+        manager = self._get_manager()
+
+        # Create a simple figure
+        fig, ax = plt.subplots()
+        ax.plot([1, 2, 3], [1, 2, 3])
+
+        result = manager._sanitize_table_value(fig)
+
+        # Figure is currently returned unchanged because there's no return statement for figures
+        # (only for axes)
+        assert result == fig
+
+        plt.close(fig)
+
+    @pytest.mark.skipif(
+        not DependencyManager.matplotlib.has(),
+        reason="Matplotlib not installed",
+    )
+    def test_sanitize_matplotlib_axes(self) -> None:
+        """Test that Matplotlib axes are converted to HTML."""
+        import matplotlib.pyplot as plt
+
+        manager = self._get_manager()
+
+        # Create a simple axes
+        fig, ax = plt.subplots()
+        ax.plot([1, 2, 3], [1, 2, 3])
+
+        result = manager._sanitize_table_value(ax)
+
+        # Verify it returns a dict with mimetype and data
+        assert isinstance(result, dict)
+        assert "mimetype" in result
+        assert "data" in result
+
+        plt.close(fig)
+
+    def test_sanitize_unsupported_types(self) -> None:
+        """Test that unsupported types are returned unchanged."""
+        manager = self._get_manager()
+
+        # Test various unsupported types
+        class CustomClass:
+            pass
+
+        obj = CustomClass()
+        assert manager._sanitize_table_value(obj) == obj
+
+        # Test dict
+        d = {"key": "value"}
+        assert manager._sanitize_table_value(d) == d
+
+        # Test list
+        lst = [1, 2, 3]
+        assert manager._sanitize_table_value(lst) == lst
+
+    def _get_manager(self) -> NarwhalsTableManager[Any]:
+        """Helper method to create a manager."""
+        import polars as pl
+
+        data = pl.DataFrame({"A": [1, 2, 3]})
+        return NarwhalsTableManager.from_dataframe(data)

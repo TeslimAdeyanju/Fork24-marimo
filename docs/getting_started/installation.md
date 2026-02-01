@@ -27,10 +27,13 @@ Before installing marimo, we recommend creating and activating a Python
 /// admonition | Using uv?
     type: tip
 
-[uv](https://github.com/astral-sh/uv) is a next-generation Python package
+[uv](https://docs.astral.sh/uv/) is a next-generation Python package
 installer and manager that is 10-100x faster than pip, and also makes it easy
-to install Python and manage projects. With `uv`, creating a virtual
-environment is as easy as `uv venv`.
+to install Python and manage projects. Create a [uv
+project](https://docs.astral.sh/uv/guides/projects/) with `uv init`; this
+creates and manages a virtual environment for you behind-the-scenes. For
+detailed information on using marimo with `uv`, see our [uv
+guide](../guides/package_management/using_uv.md).
 ///
 
 ## Install with minimal dependencies
@@ -115,22 +118,21 @@ uv add "marimo[recommended]"
 /// tab | install with conda
 
 ```bash
-conda install -c conda-forge marimo "duckdb>=1.0.0" "altair>=5.4.0" pyarrow "polars>=1.9.0" "sqlglot>=23.4" "openai>=1.55.3" "ruff" "nbformat>=5.7.0" "vegafusion>=2.0.0" "vl-convert-python>=1.0.0"
+conda install -c conda-forge marimo "duckdb>=1.0.0" "altair>=5.4.0" pyarrow "polars>=1.9.0" "sqlglot[rs]>=23.4" "openai>=1.55.3" "ruff" "nbformat>=5.7.0" "vegafusion>=2.0.0" "vl-convert-python>=1.0.0"
 ```
 
 ///
 
 Installing marimo in this way installs the following additional dependencies and unlocks the following features:
 
-| Dependency                 | Feature                          |
-|----------------------------|----------------------------------|
-| duckdb>=1.0.0              | SQL cells                        |
+| Dependency                 | Feature                         |
+|----------------------------|---------------------------------|
+| duckdb>=1.0.0              | SQL cells                       |
 | altair>=5.4.0              | Plotting in datasource viewer   |
 | polars[pyarrow]>=1.9.0     | SQL output back in Python       |
-| sqlglot>=23.4              | SQL cells parsing               |
+| sqlglot[rs]>=23.4          | SQL cells parsing               |
 | openai>=1.55.3             | AI features                     |
 | ruff                       | Formatting                      |
 | nbformat>=5.7.0            | Export as IPYNB                 |
 | vegafusion>=2.0.0          | Performant charting             |
 | vl-convert-python>=1.0.0   | Required by vegafusion          |
-

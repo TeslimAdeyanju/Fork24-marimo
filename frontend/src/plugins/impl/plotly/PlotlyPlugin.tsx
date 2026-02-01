@@ -1,6 +1,6 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
-import type { Figure } from "react-plotly.js";
+import type { Figure, PlotParams } from "react-plotly.js";
 import { z } from "zod";
 import type { IPlugin, IPluginProps, Setter } from "@/plugins/types";
 import { Logger } from "@/utils/Logger";
@@ -27,7 +27,7 @@ type AxisDatum = unknown;
 
 type T =
   | {
-      points?: Array<Record<AxisName, AxisDatum>> | Plotly.PlotDatum[];
+      points?: Record<AxisName, AxisDatum>[] | Plotly.PlotDatum[];
       indices?: number[];
       range?: {
         x?: number[];
@@ -71,7 +71,14 @@ interface PlotlyPluginProps extends Data {
   host: HTMLElement;
 }
 
-export const LazyPlot = lazy(() => import("react-plotly.js"));
+// For whatever reason, the version of vite-rolldown that we are one is not exporting this default export correctly.
+export const LazyPlot = lazy(() =>
+  import("react-plotly.js").then((module) => {
+    return module.default as unknown as {
+      default: React.ComponentType<PlotParams>;
+    };
+  }),
+);
 
 function initialLayout(figure: Figure): Partial<Plotly.Layout> {
   // Enable autosize if width is not specified
@@ -85,7 +92,7 @@ function initialLayout(figure: Figure): Partial<Plotly.Layout> {
   };
 }
 
-const SUNBURST_DATA_KEYS: Array<keyof Plotly.SunburstPlotDatum> = [
+const SUNBURST_DATA_KEYS: (keyof Plotly.SunburstPlotDatum)[] = [
   "color",
   "curveNumber",
   "entry",
@@ -279,7 +286,7 @@ PlotlyComponent.displayName = "PlotlyComponent";
  */
 function extractPoints(
   points: Plotly.PlotDatum[],
-): Array<Record<AxisName, AxisDatum>> {
+): Record<AxisName, AxisDatum>[] {
   if (!points) {
     return [];
   }

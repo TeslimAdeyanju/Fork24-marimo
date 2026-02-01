@@ -12,7 +12,7 @@
 
 import marimo
 
-__generated_with = "0.10.15"
+__generated_with = "0.17.4"
 app = marimo.App(width="columns")
 
 
@@ -32,7 +32,7 @@ async def _():
         await micropip.install("altair")
 
     import altair as alt
-    return alt, micropip, sys
+    return (alt,)
 
 
 @app.cell
@@ -90,22 +90,22 @@ def _(raw_digits):
 
 @app.cell(column=1, hide_code=True)
 def _(mo):
-    mo.md("""# Embedding Visualizer""")
+    mo.md("""
+    # Embedding Visualizer
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        """
-        Here's a PCA **embedding of numerical digits**: each point represents a 
-        digit, with similar digits close to each other. The data is from the UCI 
-        ML handwritten digits dataset.
+    mo.md("""
+    Here's a PCA **embedding of numerical digits**: each point represents a
+    digit, with similar digits close to each other. The data is from the UCI
+    ML handwritten digits dataset.
 
-        This notebook will automatically drill down into points you **select with 
-        your mouse**; try it!
-        """
-    )
+    This notebook will automatically drill down into points you **select with
+    your mouse**; try it!
+    """)
     return
 
 
@@ -129,7 +129,7 @@ def _(pl, raw_digits, raw_labels, sklearn):
             "index": list(range(X_embedded.shape[0])),
         }
     )
-    return X_embedded, embedding
+    return (embedding,)
 
 
 @app.cell
@@ -168,7 +168,7 @@ def _(chart, mo, show_images, table):
         {table}
         """
     )
-    return (selected_images,)
+    return
 
 
 if __name__ == "__main__":

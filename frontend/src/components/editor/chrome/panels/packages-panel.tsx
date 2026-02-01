@@ -21,12 +21,7 @@ import {
 import { Tooltip } from "@/components/ui/tooltip";
 import { toast } from "@/components/ui/use-toast";
 import { useResolvedMarimoConfig } from "@/core/config/config";
-import {
-  addPackage,
-  getDependencyTree,
-  getPackageList,
-  removePackage,
-} from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import type { DependencyTreeNode } from "@/core/network/types";
 import {
   showRemovePackageToast,
@@ -70,9 +65,10 @@ const PackageActionButton: React.FC<{
   );
 };
 
-export const PackagesPanel: React.FC = () => {
+const PackagesPanel: React.FC = () => {
   const [config] = useResolvedMarimoConfig();
   const packageManager = config.package_management.manager;
+  const { getDependencyTree, getPackageList } = useRequestClient();
 
   const [userViewMode, setUserViewMode] = React.useState<ViewMode | null>(null);
   const {
@@ -139,7 +135,7 @@ export const PackagesPanel: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
             <div
-              className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium"
+              className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium"
               title={isSandbox ? "sandbox" : "project"}
             >
               {isSandbox ? "sandbox" : "project"}
@@ -165,6 +161,8 @@ export const PackagesPanel: React.FC = () => {
     </div>
   );
 };
+
+export default PackagesPanel;
 
 const InstallPackageForm: React.FC<{
   packageManager: string;
@@ -213,7 +211,7 @@ const InstallPackageForm: React.FC<{
           ) : (
             <Tooltip content="Change package manager">
               <BoxIcon
-                onClick={() => openSettings("packageManagement")}
+                onClick={() => openSettings("packageManagementAndData")}
                 className="mr-2 h-4 w-4 shrink-0 opacity-50 hover:opacity-80 cursor-pointer"
               />
             </Tooltip>
@@ -302,7 +300,7 @@ const InstallPackageForm: React.FC<{
 
 const PackagesList: React.FC<{
   onSuccess: () => void;
-  packages: Array<{ name: string; version: string }>;
+  packages: { name: string; version: string }[];
 }> = ({ onSuccess, packages }) => {
   if (packages.length === 0) {
     return (
@@ -353,6 +351,7 @@ const UpgradeButton: React.FC<{
   onSuccess: () => void;
 }> = ({ packageName, onSuccess }) => {
   const [loading, setLoading] = React.useState(false);
+  const { addPackage } = useRequestClient();
 
   // Hide upgrade button in WASM
   if (isWasm()) {
@@ -389,6 +388,7 @@ const RemoveButton: React.FC<{
   onSuccess: () => void;
 }> = ({ packageName, onSuccess }) => {
   const [loading, setLoading] = React.useState(false);
+  const { removePackage } = useRequestClient();
 
   const handleRemovePackage = async () => {
     try {
@@ -413,7 +413,7 @@ const RemoveButton: React.FC<{
 };
 
 const DependencyTree: React.FC<{
-  tree?: DependencyTreeNode;
+  tree: DependencyTreeNode | null;
   error?: Error | null;
   onSuccess: () => void;
 }> = ({ tree, error, onSuccess }) => {
@@ -520,7 +520,7 @@ const DependencyTreeNode: React.FC<{
       <div
         className={cn(
           "flex items-center group cursor-pointer text-sm whitespace-nowrap",
-          "hover:bg-[var(--slate-2)] focus:bg-[var(--slate-2)] focus:outline-none",
+          "hover:bg-(--slate-2) focus:bg-(--slate-2) focus:outline-hidden",
           hasChildren && "select-none",
           isTopLevel ? "px-2 py-0.5" : "",
         )}
@@ -535,12 +535,12 @@ const DependencyTreeNode: React.FC<{
         {/* Expand/collapse arrow */}
         {hasChildren ? (
           isExpanded ? (
-            <ChevronDownIcon className="w-4 h-4 mr-2 flex-shrink-0" />
+            <ChevronDownIcon className="w-4 h-4 mr-2 shrink-0" />
           ) : (
-            <ChevronRightIcon className="w-4 h-4 mr-2 flex-shrink-0" />
+            <ChevronRightIcon className="w-4 h-4 mr-2 shrink-0" />
           )
         ) : (
-          <div className="w-4 mr-2 flex-shrink-0" />
+          <div className="w-4 mr-2 shrink-0" />
         )}
 
         {/* Package info */}
@@ -560,7 +560,7 @@ const DependencyTreeNode: React.FC<{
               return (
                 <div
                   key={index}
-                  className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300"
+                  className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300"
                   title="cycle"
                 >
                   cycle
@@ -571,7 +571,7 @@ const DependencyTreeNode: React.FC<{
               return (
                 <div
                   key={index}
-                  className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300"
+                  className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300"
                   title={tag.value}
                 >
                   {tag.value}
@@ -582,7 +582,7 @@ const DependencyTreeNode: React.FC<{
               return (
                 <div
                   key={index}
-                  className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium border-green-300 dark:border-green-700 text-green-700 dark:text-green-300"
+                  className="items-center border px-2 py-0.5 text-xs transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 text-foreground rounded-sm text-ellipsis block overflow-hidden max-w-fit font-medium border-green-300 dark:border-green-700 text-green-700 dark:text-green-300"
                   title={tag.value}
                 >
                   {tag.value}

@@ -20,7 +20,7 @@ interface Data {
    * It may also be a human-readable string like "1m" or "1h" or "3h 30m".
    * These will be converted to seconds.
    */
-  options: Array<string | number>;
+  options: (string | number)[];
   /**
    * The initial value.
    */
@@ -117,7 +117,7 @@ const RefreshComponent = ({ setValue, data }: IPluginProps<Value, Data>) => {
 
   return (
     <Labeled label={data.label}>
-      <span className="inline-flex items-center text-secondary-foreground rounded shadow-smSolid">
+      <span className="inline-flex items-center text-secondary-foreground rounded shadow-sm-solid">
         <Button
           data-testid="marimo-plugin-refresh-button"
           variant="secondary"

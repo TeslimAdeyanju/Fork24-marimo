@@ -1,5 +1,14 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 import "./islands.css";
+import "../../css/common.css";
+import "../../css/globals.css";
+import "../../css/codehilite.css";
+import "../../css/katex.min.css";
+import "../../css/md.css";
+import "../../css/admonition.css";
+import "../../css/md-tooltip.css";
+import "../../css/table.css";
+
 import "iconify-icon";
 
 import { toast } from "@/components/ui/use-toast";
@@ -7,7 +16,7 @@ import { renderHTML } from "@/plugins/core/RenderHTML";
 import { initializePlugins } from "@/plugins/plugins";
 import { logNever } from "@/utils/assertNever";
 import { Functions } from "@/utils/functions";
-import type { Base64String } from "@/utils/json/base64";
+import { safeExtractSetUIElementMessageBuffers } from "@/utils/json/base64";
 import { jsonParseWithSpecialChar } from "@/utils/json/json-parser";
 import { Logger } from "@/utils/Logger";
 import {
@@ -27,8 +36,9 @@ import {
 } from "../kernel/handlers";
 import { queryParamHandlers } from "../kernel/queryParamHandlers";
 import { RuntimeState } from "../kernel/RuntimeState";
+import { initialModeAtom } from "../mode";
 import type { RequestId } from "../network/DeferredRequestRegistry";
-import { sendComponentValues } from "../network/requests";
+import { requestClientAtom } from "../network/requests";
 import { store } from "../state/jotai";
 import { IslandsPyodideBridge } from "./bridge";
 import { MarimoIslandElement } from "./components/web-components";
@@ -46,6 +56,10 @@ import { dismissIslandsLoadingToast, toastIslandsLoading } from "./toast";
  * Initialize the Marimo app.
  */
 export async function initialize() {
+  // Setup networking
+  store.set(requestClientAtom, IslandsPyodideBridge.INSTANCE);
+  store.set(initialModeAtom, "read");
+
   // This will display all the static HTML content.
   initializePlugins();
 
@@ -91,7 +105,7 @@ export async function initialize() {
   // Consume messages from the kernel
   IslandsPyodideBridge.INSTANCE.consumeMessages((message) => {
     const msg = jsonParseWithSpecialChar(message);
-    switch (msg.op) {
+    switch (msg.data.op) {
       case "banner":
       case "missing-package-alert":
       case "installing-package-alert":
@@ -107,7 +121,9 @@ export async function initialize() {
       case "sql-table-list-preview":
       case "datasets":
       case "data-source-connections":
+      case "validate-sql-result":
       case "secret-keys-result":
+      case "startup-logs":
         // Unsupported
         return;
       case "kernel-ready":
@@ -131,7 +147,7 @@ export async function initialize() {
         UI_ELEMENT_REGISTRY.broadcastMessage(
           msg.data.ui_element as UIElementId,
           msg.data.message,
-          msg.data.buffers as Base64String[],
+          safeExtractSetUIElementMessageBuffers(msg.data),
         );
         return;
 
@@ -171,8 +187,12 @@ export async function initialize() {
         return;
       case "reconnected":
         return;
+      case "cache-cleared":
+        return;
+      case "cache-info-fetched":
+        return;
       default:
-        logNever(msg);
+        logNever(msg.data);
     }
   });
 
@@ -189,7 +209,9 @@ export async function initialize() {
   );
 
   // Start the runtime
-  RuntimeState.INSTANCE.start(sendComponentValues);
+  RuntimeState.INSTANCE.start(
+    IslandsPyodideBridge.INSTANCE.sendComponentValues,
+  );
 }
 
 initialize();

@@ -17,7 +17,11 @@ from marimo._ast.app import App, CellManager
 from marimo._ast.app_config import _AppConfig
 from marimo._config.config import DEFAULT_CONFIG
 from marimo._messaging.mimetypes import ConsoleMimeType
-from marimo._messaging.ops import CellOp, MessageOperation
+from marimo._messaging.ops import (
+    CellOp,
+    MessageOperation,
+    deserialize_kernel_message,
+)
 from marimo._messaging.print_override import print_override
 from marimo._messaging.streams import (
     ThreadSafeStderr,
@@ -25,6 +29,7 @@ from marimo._messaging.streams import (
     ThreadSafeStdout,
     ThreadSafeStream,
 )
+from marimo._messaging.types import KernelMessage
 from marimo._output.formatters.formatters import register_formatters
 from marimo._runtime import patches
 from marimo._runtime.context import teardown_context
@@ -33,9 +38,9 @@ from marimo._runtime.input_override import input_override
 from marimo._runtime.marimo_pdb import MarimoPdb
 from marimo._runtime.requests import AppMetadata, ExecutionRequest
 from marimo._runtime.runtime import Kernel
+from marimo._save.cache import ModuleStub
 from marimo._server.model import SessionMode
 from marimo._types.ids import CellId_t
-from marimo._utils.parse_dataclass import parse_raw
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -65,22 +70,17 @@ class _MockStream(ThreadSafeStream):
     pipe: None = None
     redirect_console: bool = False
 
-    messages: list[tuple[str, dict[Any, Any]]] = dataclasses.field(
-        default_factory=list
-    )
+    messages: list[KernelMessage] = dataclasses.field(default_factory=list)
 
-    def write(self, op: str, data: dict[Any, Any]) -> None:
-        self.messages.append((op, data))
+    def write(self, data: KernelMessage) -> None:
+        self.messages.append(data)
+        # Attempt to deserialize the message to ensure it is valid
+        deserialize_kernel_message(data)
 
     @property
     def operations(self) -> list[MessageOperation]:
-        @dataclasses.dataclass
-        class Container:
-            operation: MessageOperation
-
         return [
-            parse_raw({"operation": op_data}, Container).operation
-            for _op_name, op_data in self.messages
+            deserialize_kernel_message(op_data) for op_data in self.messages
         ]
 
     @property
@@ -631,6 +631,17 @@ def app() -> Generator[App, None, None]:
     app._pytest_rewrite = True
     yield app
     app.run()
+
+
+class TestableModuleStub(ModuleStub):
+    def __eq__(self, other: Any) -> bool:
+        # Used for testing, equality otherwise not useful.
+        if not isinstance(other, ModuleStub):
+            return False
+        return self.name == other.name
+
+    def __hash__(self) -> int:
+        return hash(self.name) + hash("module")
 
 
 # A pytest hook to fail when raw marimo cells are not collected.

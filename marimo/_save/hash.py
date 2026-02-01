@@ -17,13 +17,15 @@ from marimo._ast.variables import (
     if_local_then_mangle,
     unmangle_local,
 )
-from marimo._ast.visitor import Name, ScopedVisitor
+from marimo._ast.visitor import ImportData, Name, ScopedVisitor
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._plugins.ui._core.ui_element import UIElement
 from marimo._runtime.context import ContextNotInitializedError, get_context
 from marimo._runtime.dataflow import induced_subgraph
 from marimo._runtime.primitives import (
+    CLONE_PRIMITIVES,
     FN_CACHE_TYPE,
+    build_ref_predicate_for_primitives,
     is_data_primitive,
     is_data_primitive_container,
     is_primitive,
@@ -33,6 +35,7 @@ from marimo._runtime.side_effect import CellHash, SideEffect
 from marimo._runtime.state import SetFunctor, State
 from marimo._runtime.watch._path import PathState
 from marimo._save.cache import Cache, CacheType
+from marimo._save.stubs import maybe_get_custom_stub
 from marimo._types.ids import CellId_t
 
 if TYPE_CHECKING:
@@ -88,6 +91,28 @@ def hash_module(
 
     process(code)
     return hash_alg.digest()
+
+
+def hash_wrapped_functions(
+    wrapped: Callable[..., Any], hash_type: str = DEFAULT_HASH
+) -> bytes:
+    seen = set()
+
+    # there is a chance for a circular reference
+    # likely manually created, but easy to guard against.
+    def process_function(fn: Callable[..., Any]) -> bytes:
+        if not inspect.isbuiltin(fn):
+            fn_hash = hash_module(fn.__code__, hash_type)
+        else:
+            # Builtin functions are not hashable, so we use their name.
+            fn_hash = type_sign(bytes(fn.__name__, "utf-8"), "builtin")
+        if fn_hash not in seen and hasattr(fn, "__wrapped__"):
+            child_hash = hash_wrapped_functions(fn.__wrapped__, hash_type)
+            return child_hash + fn_hash
+        seen.add(fn_hash)
+        return fn_hash
+
+    return process_function(wrapped)
 
 
 def hash_raw_module(
@@ -313,6 +338,7 @@ class BlockHasher:
         hash_type: str = DEFAULT_HASH,
         apply_content_hash: bool = True,
         scoped_refs: Optional[set[Name]] = None,
+        external: bool = False,
     ) -> None:
         """Hash the context of the module, and return a cache object.
 
@@ -358,6 +384,8 @@ class BlockHasher:
                 execution path hash.
             scoped_refs: A set of references that cannot be traced via execution path, and must be
                 accounted for via content hashing.
+            external: If True, then the object was imported as a module. As such, the context should
+                not be respected, and ignored.
         """
 
         # Hash should not be pinned to cell id
@@ -391,7 +419,9 @@ class BlockHasher:
         if not apply_content_hash:
             refs, self.missing = self.extract_missing_ref(refs, scope)
 
-        ctx = get_and_update_context_from_scope(scope)
+        ctx = None
+        if not external:
+            ctx = get_and_update_context_from_scope(scope)
         refs, _, stateful_refs = self.extract_ref_state_and_normalize_scope(
             refs, scope, ctx
         )
@@ -564,6 +594,25 @@ class BlockHasher:
             exceptions = []
             # By rights, could just fail here - but this final attempt should
             # provide better user experience.
+            #
+            # Get a transitive closure over the object, and attempt to pickle
+            # each dependent object.
+            closure = self.graph.get_transitive_references(
+                unhashable,
+                predicate=build_ref_predicate_for_primitives(
+                    scope, CLONE_PRIMITIVES
+                ),
+            )
+            closure -= set(content_serialization.keys()) | self.execution_refs
+            unhashable_closure, relevant_serialization, _ = (
+                self.serialize_and_dequeue_content_refs(
+                    closure - unhashable, scope
+                )
+            )
+            unhashable |= unhashable_closure
+            content_serialization.update(relevant_serialization)
+            refs |= unhashable_closure
+
             for ref in unhashable:
                 try:
                     _hashed = pickle.dumps(scope[ref])
@@ -726,6 +775,15 @@ class BlockHasher:
         NB. "Hashable" types are primitives, data primitives, and pure
         functions. With modules being "hashed" by version number, or ignored.
 
+        The current "hashables" are:
+         - module (with pin by version)
+         - primitive (bytes, str, numbers.Number, type(None))
+         - data primitive (e.g. numpy array, torch tensor)
+         - external module definitions (imported anything)
+         - pure functions (no state, no external dependencies)
+         - pure containers of the above (list, dict, set, tuple)
+         - custom types defined in CUSTOM_STUBS
+
         Args:
             refs: A set of reference names unaccounted for.
             scope: A dictionary representing the current scope.
@@ -739,7 +797,7 @@ class BlockHasher:
         refs = set(refs)
         # Content addressed hash is valid if every reference is accounted for
         # and can be shown to be a primitive value.
-        imports = self.graph.get_imports()
+        imports = get_imports(scope)
         for local_ref in sorted(refs):
             ref = if_local_then_mangle(local_ref, self.cell_id)
             if ref in imports:
@@ -747,9 +805,13 @@ class BlockHasher:
                 # e.g. module watcher could mutate the version number based
                 # last updated timestamp.
                 version = ""
+                module = None
                 if self.pin_modules:
-                    module = sys.modules[imports[ref].namespace]
+                    module = sys.modules[imports[ref].module]
                     version = getattr(module, "__version__", "")
+                    if not version:
+                        module = sys.modules[imports[ref].namespace]
+                        version = getattr(module, "__version__", "")
 
                 content_serialization[ref] = type_sign(
                     bytes(f"module:{ref}:{version}", "utf-8"), "module"
@@ -774,11 +836,15 @@ class BlockHasher:
             elif is_pure_function(
                 local_ref, value, scope, self.fn_cache, self.graph
             ):
-                serial_value = hash_module(value.__code__, self.hash_alg.name)
+                serial_value = hash_wrapped_functions(
+                    value, self.hash_alg.name
+                )
             # An external module variable is assumed to be pure, with module
             # pinning being the mechanism for invalidation.
             elif getattr(value, "__module__", "__main__") == "__main__":
                 continue
+            elif stub := maybe_get_custom_stub(value):
+                serial_value = stub.to_bytes()
             # External module that is not a class or function, may be some
             # container we don't know how to hash.
             # Note, function cases care caught by is_pure_function
@@ -1016,6 +1082,28 @@ class BlockHasher:
             )
             | cell_basis
         )
+
+
+def get_imports(scope: dict[str, Any]) -> dict[Name, ImportData]:
+    """Get the imports from the scope.
+
+    Args:
+        scope: The scope to get the imports from.
+
+    Returns:
+        A dictionary of imports.
+    """
+    # In cases without context, we must build the imports
+    # implicitly from scope.
+    imports = {
+        name: ImportData(
+            module=obj.__name__,
+            definition=name,
+        )
+        for name, obj in scope.items()
+        if inspect.ismodule(obj)
+    }
+    return imports
 
 
 def cache_attempt_from_hash(

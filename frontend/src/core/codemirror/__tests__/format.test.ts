@@ -3,15 +3,18 @@
 import { python } from "@codemirror/lang-python";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { atom } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MockRequestClient } from "@/__mocks__/requests";
 import type { NotebookState } from "@/core/cells/cells";
 import { getNotebook } from "@/core/cells/cells";
 import type { CellId } from "@/core/cells/ids";
 import { notebookCellEditorViews } from "@/core/cells/utils";
 import { getResolvedMarimoConfig } from "@/core/config/config";
 import { OverridingHotkeyProvider } from "@/core/hotkeys/hotkeys";
-import { sendFormat } from "@/core/network/requests";
+import { requestClientAtom } from "@/core/network/requests";
 import type { MarimoConfig } from "@/core/network/types";
+import { store } from "@/core/state/jotai";
 import { type CodemirrorCellActions, cellActionsState } from "../cells/state";
 import { cellIdState } from "../config/extension";
 import { formatAll, formatEditorViews, formatSQL } from "../format";
@@ -20,9 +23,7 @@ import {
   switchLanguage,
 } from "../language/extension";
 
-vi.mock("@/core/network/requests", () => ({
-  sendFormat: vi.fn(),
-}));
+const mockRequestClient = MockRequestClient.create();
 
 vi.mock("@/core/cells/cells", () => ({
   getNotebook: vi.fn(),
@@ -34,6 +35,11 @@ vi.mock("@/core/cells/utils", () => ({
 
 vi.mock("@/core/config/config", () => ({
   getResolvedMarimoConfig: vi.fn(),
+  resolvedMarimoConfigAtom: atom({
+    display: {
+      theme: "light",
+    },
+  }),
 }));
 
 const updateCellCode = vi.fn();
@@ -75,6 +81,9 @@ const mockConfig = {
 
 beforeEach(() => {
   updateCellCode.mockClear();
+  vi.clearAllMocks();
+  // Set the mock request client in the atom
+  store.set(requestClientAtom, mockRequestClient);
 });
 
 describe("format", () => {
@@ -90,7 +99,7 @@ describe("format", () => {
       const formattedCode1 = "import numpy as np";
       const formattedCode2 = "import pandas as pd";
 
-      vi.mocked(sendFormat).mockResolvedValueOnce({
+      mockRequestClient.sendFormat.mockResolvedValueOnce({
         codes: {
           [cellId1]: formattedCode1,
           [cellId2]: formattedCode2,
@@ -101,7 +110,7 @@ describe("format", () => {
 
       await formatEditorViews(views);
 
-      expect(sendFormat).toHaveBeenCalledWith({
+      expect(mockRequestClient.sendFormat).toHaveBeenCalledWith({
         codes: {
           [cellId1]: "import numpy as    np",
           [cellId2]: "import pandas as    pd",
@@ -130,7 +139,7 @@ describe("format", () => {
         [cellId]: createEditor(originalCode, cellId),
       };
 
-      vi.mocked(sendFormat).mockResolvedValueOnce({
+      mockRequestClient.sendFormat.mockResolvedValueOnce({
         codes: {
           [cellId]: originalCode,
         },
@@ -156,7 +165,7 @@ describe("format", () => {
 
       vi.mocked(getNotebook).mockReturnValueOnce({} as NotebookState);
       vi.mocked(notebookCellEditorViews).mockReturnValueOnce(views);
-      vi.mocked(sendFormat).mockResolvedValueOnce({
+      mockRequestClient.sendFormat.mockResolvedValueOnce({
         codes: {
           [cellId1]: "import numpy as np",
           [cellId2]: "import pandas as pd",
@@ -167,7 +176,7 @@ describe("format", () => {
 
       await formatAll();
 
-      expect(sendFormat).toHaveBeenCalledWith({
+      expect(mockRequestClient.sendFormat).toHaveBeenCalledWith({
         codes: {
           [cellId1]: "import numpy as    np",
           [cellId2]: "import pandas as    pd",

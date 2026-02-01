@@ -7,12 +7,13 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
-import marimo
+from marimo._ast.cell import Cell
 from marimo._ast.pytest import MARIMO_TEST_STUB_NAME
 from marimo._cli.print import bold, green
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._runtime.capture import capture_stdout
-from marimo._runtime.context import ContextNotInitializedError, get_context
+from marimo._runtime.context import safe_get_context
+from marimo._runtime.runtime import notebook_location
 
 MARIMO_TEST_BLOCK_REGEX = re.compile(rf"{MARIMO_TEST_STUB_NAME}_\d+[(?::)\.]+")
 
@@ -44,14 +45,11 @@ class MarimoPytestResult:
         )
 
 
-def _maybe_name() -> str:
-    try:
-        ctx: Any = get_context()
-        if ctx.filename is not None:
-            filename = ctx.filename
-    except ContextNotInitializedError:
-        filename = "notebook.py"
-    assert isinstance(filename, str)
+def _get_name(default: str = "notebook.py") -> str:
+    filename = default
+    ctx = safe_get_context()
+    if ctx and ctx.filename is not None:
+        filename = ctx.filename
     return filename
 
 
@@ -63,7 +61,7 @@ def _to_marimo_uri(uri: str) -> str:
         return uri
     cell_id = uri.split("_")[6]
 
-    notebook = os.path.relpath(_maybe_name(), marimo.notebook_location())
+    notebook = os.path.relpath(_get_name(), notebook_location())
     return f"marimo://{notebook}#cell_id={cell_id}"
 
 
@@ -72,7 +70,7 @@ def _sub_function(
 ) -> _pytest.Item:
     # Directly execute the cell, since this means it's a toplevel function with no deps.
     # Or a cell where which we already wrapped in skip.
-    if isinstance(old_item.obj, marimo._ast.cell.Cell):
+    if isinstance(old_item.obj, Cell):
         return old_item
 
     import pytest  # type: ignore
@@ -249,7 +247,7 @@ def run_pytest(
 
     if not notebook_path:
         # Translate name to python module
-        notebook_path = _maybe_name()
+        notebook_path = _get_name()
     notebook_path = str(notebook_path)
 
     # Hold on to modules since we want to refresh them in order to enable

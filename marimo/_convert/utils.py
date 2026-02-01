@@ -5,17 +5,15 @@ from marimo._ast import codegen
 
 
 def markdown_to_marimo(source: str) -> str:
+    # NB. This should be kept in sync with the logic in
+    # frontend/src/core/codemirror/language/languages/markdown.ts
+    # ::transformOut
     source = source.replace('"""', '\\"\\"\\"')
-    return "\n".join(
-        [
-            "mo.md(",
-            # r-string: a backslash is just a backslash!
-            codegen.indent_text('r"""'),
-            codegen.indent_text(source),
-            codegen.indent_text('"""'),
-            ")",
-        ]
-    )
+
+    # 6 quotes in a row breaks
+    if not source:
+        source = " "
+    return codegen.construct_markdown_call(source, '"""', "r")
 
 
 def sql_to_marimo(

@@ -1,5 +1,6 @@
 /* Copyright 2024 Marimo. All rights reserved. */
-import { sendRun } from "../network/requests";
+
+import { getRequestClient } from "../network/requests";
 import { store } from "../state/jotai";
 import { variablesAtom } from "../variables/state";
 import { type CellActions, notebookAtom } from "./cells";
@@ -46,33 +47,51 @@ export function maybeAddMissingImport({
   return true;
 }
 
+/**
+ * Adds a marimo import to the notebook if not already present.
+ * @param autoInstantiate Whether to automatically run the cell.
+ * @param createNewCell The function to create a new cell.
+ * @param fromCellId The cell to add the import to.
+ * @param before Whether to add the import before or after the cell.
+ *
+ * Returns the ID of the new cell if added, otherwise null.
+ */
 export function maybeAddMarimoImport({
   autoInstantiate,
   createNewCell,
   fromCellId,
+  before,
 }: {
   autoInstantiate: boolean;
   createNewCell: CellActions["createNewCell"];
   fromCellId?: CellId | null;
-}): boolean {
-  return maybeAddMissingImport({
+  before?: boolean;
+}): CellId | null {
+  const client = getRequestClient();
+  let newCellId: CellId | null = null;
+  const added = maybeAddMissingImport({
     moduleName: "marimo",
     variableName: "mo",
     onAddImport: (importStatement) => {
-      const newCellId = CellId.create();
+      newCellId = CellId.create();
       createNewCell({
         cellId: fromCellId ?? "__end__",
-        before: false,
+        before: before ?? false,
         code: importStatement,
         lastCodeRun: autoInstantiate ? importStatement : undefined,
         newCellId: newCellId,
+        skipIfCodeExists: true,
         autoFocus: false,
       });
       if (autoInstantiate) {
-        void sendRun({ cellIds: [newCellId], codes: [importStatement] });
+        void client.sendRun({
+          cellIds: [newCellId],
+          codes: [importStatement],
+        });
       }
     },
   });
+  return added ? newCellId : null;
 }
 
 export function maybeAddAltairImport({
@@ -83,23 +102,30 @@ export function maybeAddAltairImport({
   autoInstantiate: boolean;
   createNewCell: CellActions["createNewCell"];
   fromCellId?: CellId | null;
-}): boolean {
-  return maybeAddMissingImport({
+}): CellId | null {
+  const client = getRequestClient();
+  let newCellId: CellId | null = null;
+  const added = maybeAddMissingImport({
     moduleName: "altair",
     variableName: "alt",
     onAddImport: (importStatement) => {
-      const newCellId = CellId.create();
+      newCellId = CellId.create();
       createNewCell({
         cellId: fromCellId ?? "__end__",
         before: false,
         code: importStatement,
         lastCodeRun: autoInstantiate ? importStatement : undefined,
         newCellId: newCellId,
+        skipIfCodeExists: true,
         autoFocus: false,
       });
       if (autoInstantiate) {
-        void sendRun({ cellIds: [newCellId], codes: [importStatement] });
+        void client.sendRun({
+          cellIds: [newCellId],
+          codes: [importStatement],
+        });
       }
     },
   });
+  return added ? newCellId : null;
 }

@@ -1,3 +1,5 @@
+@reference "../src/css/globals.css";
+
 .sbdocs-content {
   display: flex;
   gap: 20px;
@@ -9,5 +11,5 @@
 }
 
 .sbdocs.sbdocs-wrapper h1 {
-  @apply text-foreground !important;
+  @apply !text-foreground;
 }

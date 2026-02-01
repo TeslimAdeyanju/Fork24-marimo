@@ -7,11 +7,13 @@ from math import isnan
 from typing import Any
 from unittest.mock import Mock
 
-import narwhals.stable.v1 as nw
+import narwhals.stable.v2 as nw
 import pytest
 
 from marimo._data.models import ColumnStats
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._output.data.data import BIGINT_KEY
+from marimo._plugins.ui._impl.table import SortArgs
 from marimo._plugins.ui._impl.tables.format import FormatMapping
 from marimo._plugins.ui._impl.tables.pandas_table import (
     PandasTableManagerFactory,
@@ -611,7 +613,7 @@ class TestPandasTableManager(unittest.TestCase):
         assert summary == ColumnStats(
             total=3,
             nulls=0,
-            unique=None,
+            unique=3,
             min=1.0,
             max=3.0,
             mean=2.0,
@@ -670,7 +672,9 @@ class TestPandasTableManager(unittest.TestCase):
             assert complex_data.get_stats(column) is not None
 
     def test_sort_values(self) -> None:
-        sorted_df = self.manager.sort_values("A", descending=True).data
+        sorted_df = self.manager.sort_values(
+            [SortArgs(by="A", descending=True)]
+        ).data
         expected_df = self.data.sort_values("A", ascending=False)
         assert_frame_equal(sorted_df, expected_df)
 
@@ -683,7 +687,9 @@ class TestPandasTableManager(unittest.TestCase):
         )
         data.index.name = "index"
         manager = self.factory.create()(data)
-        sorted_df = manager.sort_values("A", descending=True).data
+        sorted_df = manager.sort_values(
+            [SortArgs(by="A", descending=True)]
+        ).data
         assert sorted_df.to_native().index.tolist() == [3, 2, 1]
 
     def test_get_unique_column_values(self) -> None:
@@ -1031,7 +1037,7 @@ class TestPandasTableManager(unittest.TestCase):
         summary = manager.get_stats("B")
         assert summary.nulls == 3
         assert summary.total == 3
-        assert summary.unique is None
+        assert summary.unique == 1
 
     def test_dataframe_with_mixed_types(self) -> None:
         df = pd.DataFrame({"A": [1, "two", 3.0, True]})
@@ -1047,7 +1053,9 @@ class TestPandasTableManager(unittest.TestCase):
     def test_sort_values_with_nulls(self) -> None:
         df = pd.DataFrame({"A": [3, 1, None, 2]})
         manager = self.factory.create()(df)
-        sorted_manager = manager.sort_values("A", descending=True)
+        sorted_manager = manager.sort_values(
+            [SortArgs(by="A", descending=True)]
+        )
         assert sorted_manager.data["A"].to_list()[:-1] == [
             3.0,
             2.0,
@@ -1057,7 +1065,9 @@ class TestPandasTableManager(unittest.TestCase):
         assert last is None or isnan(last)
 
         # ascending
-        sorted_manager = manager.sort_values("A", descending=False)
+        sorted_manager = manager.sort_values(
+            [SortArgs(by="A", descending=False)]
+        )
         assert sorted_manager.data["A"].to_list()[:-1] == [
             1.0,
             2.0,
@@ -1180,9 +1190,9 @@ class TestPandasTableManager(unittest.TestCase):
         assert json_data[0]["A"] == 20
         assert json_data[0]["B"] == -20
 
-        # Large integers should be converted to strings
-        assert json_data[1]["A"] == "9007199254740992"
-        assert json_data[1]["B"] == "-9007199254740992"
+        # Large integers should be converted to objects
+        assert json_data[1]["A"] == {BIGINT_KEY: "9007199254740992"}
+        assert json_data[1]["B"] == {BIGINT_KEY: "-9007199254740992"}
 
     def test_to_json_uuid_encoding(self) -> None:
         import uuid
@@ -1213,3 +1223,113 @@ class TestPandasTableManager(unittest.TestCase):
         assert json_data[0]["name"] == "test1"
         assert json_data[1]["name"] == "test2"
         assert json_data[2]["name"] == "test3"
+
+    def test_to_json_series_name_conflict(self) -> None:
+        import pandas as pd
+
+        # Test case from GitHub issue #6385: Series with same name as index
+        # This should not raise "ValueError: cannot insert x, already exists"
+        series = pd.Series(
+            data=[1, 2, 3], name="x", index=pd.Index([1, 2, 3], name="x")
+        )
+
+        # Convert to DataFrame (mimics what _show_marimo_series does)
+        df = series.to_frame()
+        manager = self.factory.create()(df)
+
+        # This should not raise any errors
+        json_data = json.loads(manager.to_json())
+
+        # Verify the data structure - index should be renamed to avoid conflict
+        assert len(json_data) == 3
+        # The conflicting index name should be renamed with "_index" suffix
+        assert "x_index" in json_data[0]
+        assert "x" in json_data[0]
+        # Check data values
+        assert json_data[0]["x_index"] == 1
+        assert json_data[0]["x"] == 1
+        assert json_data[1]["x_index"] == 2
+        assert json_data[1]["x"] == 2
+        assert json_data[2]["x_index"] == 3
+        assert json_data[2]["x"] == 3
+
+    def test_to_json_multi_index_name_conflict(self) -> None:
+        import pandas as pd
+
+        # Test case with MultiIndex where one level conflicts with column
+        df = pd.DataFrame(
+            {"x": [1, 2, 3], "y": [4, 5, 6]},
+            index=pd.MultiIndex.from_tuples(
+                [(1, 4), (2, 5), (3, 6)], names=["x", "z"]
+            ),
+        )
+        manager = self.factory.create()(df)
+
+        # This should not raise any errors
+        json_data = json.loads(manager.to_json())
+
+        # Verify the data structure - conflicting index name should be renamed
+        assert len(json_data) == 3
+        assert "x_index" in json_data[0]  # Renamed index level
+        assert "z" in json_data[0]  # Non-conflicting index level
+        assert "x" in json_data[0]  # Original column
+        assert "y" in json_data[0]  # Original column
+
+    def test_handle_non_string_column_names_no_mutation(self) -> None:
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [[1, 2, 3], [4, 5, 6]],
+            columns=pd.DatetimeIndex(
+                ["2021-01-01", "2021-01-02", "2021-01-03"]
+            ),
+        )
+
+        # Store the original column types
+        original_columns = df.columns
+        original_columns_type = type(df.columns)
+        assert isinstance(original_columns, pd.DatetimeIndex)
+
+        # Create table manager (which calls _handle_non_string_column_names)
+        manager = self.factory.create()(df)
+
+        # Verify the manager has string column names
+        column_names = manager.get_column_names()
+        assert all(isinstance(name, str) for name in column_names)
+        assert column_names == [
+            "2021-01-01 00:00:00",
+            "2021-01-02 00:00:00",
+            "2021-01-03 00:00:00",
+        ]
+
+        # Verify the original DataFrame was NOT mutated
+        assert isinstance(df.columns, original_columns_type)
+        assert isinstance(df.columns, pd.DatetimeIndex)
+        assert all(isinstance(col, pd.Timestamp) for col in df.columns), (
+            "Original DataFrame columns should still be Timestamps"
+        )
+
+    def test_handle_integer_column_names_no_mutation(self) -> None:
+        import pandas as pd
+
+        # Test with integer column names
+        df = pd.DataFrame([[1, 2, 3], [4, 5, 6]], columns=[0, 1, 2])
+
+        # Store the original column info
+        original_columns_type = type(df.columns[0])
+        # Note: pandas converts int to np.int64
+        assert not isinstance(df.columns[0], str)
+
+        # Create table manager
+        manager = self.factory.create()(df)
+
+        # Verify the manager has string column names
+        column_names = manager.get_column_names()
+        assert all(isinstance(name, str) for name in column_names)
+        assert column_names == ["0", "1", "2"]
+
+        # Verify the original DataFrame was NOT mutated
+        assert isinstance(df.columns[0], original_columns_type)
+        assert not any(isinstance(col, str) for col in df.columns), (
+            "Original DataFrame columns should NOT be strings"
+        )

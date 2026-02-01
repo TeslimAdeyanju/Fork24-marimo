@@ -5,9 +5,10 @@
 #     "matplotlib==3.10.1",
 # ]
 # ///
+
 import marimo
 
-__generated_with = "0.12.9"
+__generated_with = "0.17.2"
 app = marimo.App()
 
 
@@ -19,13 +20,11 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Use local variables
+    mo.md(r"""
+    ## Use local variables
 
-        Variables prefixed with an underscore are local to a cell, and can be redefined.
-        """
-    )
+    Variables prefixed with an underscore are local to a cell, and can be redefined.
+    """)
     return
 
 
@@ -52,13 +51,11 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Wrap code in functions
+    mo.md(r"""
+    ## Wrap code in functions
 
-        Wrap cells in functions to minimize the number of temporary globals you introduce.
-        """
-    )
+    Wrap cells in functions to minimize the number of temporary globals you introduce.
+    """)
     return
 
 

@@ -12,18 +12,18 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { Table, TableCell, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { toast } from "@/components/ui/use-toast";
 import { useAsyncData } from "@/hooks/useAsyncData";
 import { useInternalStateWithSync } from "@/hooks/useInternalStateWithSync";
 import { cn } from "@/utils/cn";
-import { Logger } from "@/utils/Logger";
 import { type FilePath, PathBuilder, Paths } from "@/utils/paths";
 import { getProtocolAndParentDirectories } from "@/utils/pathUtils";
 import { PluralWords } from "@/utils/pluralize";
 import { createPlugin } from "../core/builder";
 import { renderHTML } from "../core/RenderHTML";
 import { rpc } from "../core/rpc";
+import { Banner } from "./common/error-banner";
 
 /**
  * Arguments for a file browser component.
@@ -64,6 +64,8 @@ interface FileInfo {
 type PluginFunctions = {
   list_directory: (req: { path: string }) => Promise<{
     files: FileInfo[];
+    total_count: number;
+    is_truncated: boolean;
   }>;
 };
 
@@ -97,6 +99,8 @@ export const FileBrowserPlugin = createPlugin<S>("marimo-file-browser")
               is_directory: z.boolean(),
             }),
           ),
+          total_count: z.number(),
+          is_truncated: z.boolean(),
         }),
       ),
   })
@@ -104,6 +108,7 @@ export const FileBrowserPlugin = createPlugin<S>("marimo-file-browser")
     <FileBrowser
       {...props.data}
       {...props.functions}
+      host={props.host}
       value={props.value}
       setValue={props.setValue}
     />
@@ -118,6 +123,7 @@ const PARENT_DIRECTORY = "..";
 interface FileBrowserProps extends Data, PluginFunctions {
   value: S;
   setValue: (value: S) => void;
+  host: HTMLElement;
 }
 
 /**
@@ -134,30 +140,26 @@ export const FileBrowser = ({
   label,
   restrictNavigation,
   list_directory,
+  host,
 }: FileBrowserProps): JSX.Element | null => {
   const [path, setPath] = useInternalStateWithSync(initialPath);
   const [selectAllLabel, setSelectAllLabel] = useState("Select all");
   const [isUpdatingPath, setIsUpdatingPath] = useState(false);
 
-  const { data, error, isPending } = useAsyncData(
-    () =>
-      list_directory({
-        path: path,
-      }),
-    [path],
-  );
+  // HACK: use the random-id of the host element to force a re-render
+  // when the random-id changes, this means the cell was re-rendered
+  const randomId = host.closest("[random-id]")?.getAttribute("random-id");
 
-  if (error) {
-    Logger.error(error);
-    toast({
-      title: `Could not load files in directory ${path}`,
-      description: error.message,
-      variant: "danger",
-    });
-  }
+  const { data, error, isPending } = useAsyncData(() => {
+    return list_directory({ path: path });
+  }, [path, randomId]);
 
   if (isPending) {
     return null;
+  }
+
+  if (!data && error) {
+    return <Banner kind="danger">{error.message}</Banner>;
   }
 
   let { files } = data || {};
@@ -409,13 +411,12 @@ export const FileBrowser = ({
 
     if (multiple) {
       return (
-        <div className="grid grid-cols-2 items-center border-1">
-          <div className="justify-self-start mb-1">{labelText}</div>
-          <div className="justify-self-end">
+        <div className="flex items-center justify-between border px-2">
+          <div className="mb-1">{labelText}</div>
+          <div>
             <Button
               size="xs"
               variant="link"
-              className="w-full"
               onClick={
                 selectAllLabel === "Select all"
                   ? () => selectAllFiles()
@@ -434,6 +435,7 @@ export const FileBrowser = ({
 
   return (
     <div>
+      {error && <Banner kind="danger">{error.message}</Banner>}
       {renderHeader()}
       <NativeSelect
         className="mt-2 w-full"
@@ -447,11 +449,22 @@ export const FileBrowser = ({
           </option>
         ))}
       </NativeSelect>
+
+      {data && typeof data.total_count === "number" && (
+        <div className="text-xs text-muted-foreground mt-1 px-1">
+          {data.is_truncated
+            ? `Showing ${files.length} of ${data.total_count} items`
+            : `${data.total_count} ${data.total_count === 1 ? "item" : "items"}`}
+        </div>
+      )}
+
       <div
         className="mt-3 overflow-y-auto w-full border"
         style={{ height: "14rem" }}
       >
-        <Table className="cursor-pointer table-fixed">{fileRows}</Table>
+        <Table className="cursor-pointer table-fixed">
+          <TableBody>{fileRows}</TableBody>
+        </Table>
       </div>
       <div className="mt-4">
         {value.length > 0 && (
@@ -462,9 +475,7 @@ export const FileBrowser = ({
                 selected
               </span>
               <button
-                className={cn(
-                  "text-xs text-destructive hover:underline cursor-pointer",
-                )}
+                className={cn("text-xs text-destructive hover:underline")}
                 onClick={() => setValue([])}
                 type="button"
               >

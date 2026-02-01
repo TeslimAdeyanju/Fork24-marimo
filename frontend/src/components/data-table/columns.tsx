@@ -3,10 +3,13 @@
 
 import { PopoverClose } from "@radix-ui/react-popover";
 import type { Column, ColumnDef } from "@tanstack/react-table";
+import { formatDate } from "date-fns";
+import { useNumberFormatter } from "react-aria";
+import { WithLocale } from "@/core/i18n/with-locale";
 import type { DataType } from "@/core/kernel/messages";
 import type { CalculateTopKRows } from "@/plugins/impl/DataTablePlugin";
 import { cn } from "@/utils/cn";
-import { exactDateTime } from "@/utils/dates";
+import { type DateFormat, exactDateTime, getDateFormat } from "@/utils/dates";
 import { Logger } from "@/utils/Logger";
 import { Maps } from "@/utils/maps";
 import { Objects } from "@/utils/objects";
@@ -15,9 +18,11 @@ import { JsonOutput } from "../editor/output/JsonOutput";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { Tooltip } from "../ui/tooltip";
 import { DataTableColumnHeader } from "./column-header";
 import type { ColumnChartSpecModel } from "./column-summary/chart-spec-model";
 import { TableColumnSummary } from "./column-summary/column-summary";
+import { COLUMN_WRAPPING_STYLES } from "./column-wrapping/feature";
 import { DatePopover } from "./date-popover";
 import type { FilterType } from "./filters";
 import { getMimeValues, MimeCell } from "./mime-cell";
@@ -101,6 +106,7 @@ export function generateColumns<T>({
   chartSpecModel,
   textJustifyColumns,
   wrappedColumns,
+  headerTooltip,
   showDataTypes,
   calculateTopKRows,
 }: {
@@ -110,9 +116,10 @@ export function generateColumns<T>({
   chartSpecModel?: ColumnChartSpecModel<unknown>;
   textJustifyColumns?: Record<string, "left" | "center" | "right">;
   wrappedColumns?: string[];
+  headerTooltip?: Record<string, string>;
   showDataTypes?: boolean;
   calculateTopKRows?: CalculateTopKRows;
-}): Array<ColumnDef<T>> {
+}): ColumnDef<T>[] {
   // Row-headers are typically index columns
   const rowHeadersSet = new Set(rowHeaders.map(([columnName]) => columnName));
 
@@ -160,9 +167,10 @@ export function generateColumns<T>({
         return row[key as keyof T];
       },
 
-      header: ({ column }) => {
+      header: ({ column, table }) => {
         const stats = chartSpecModel?.getColumnStats(key);
         const dtype = column.columnDef.meta?.dtype;
+        const headerTitle = headerTooltip?.[key];
         const dtypeHeader =
           showDataTypes && dtype ? (
             <div className="flex flex-row gap-1">
@@ -177,16 +185,32 @@ export function generateColumns<T>({
 
         const headerWithType = (
           <div className="flex flex-col">
-            <span className="font-bold">{key === "" ? " " : key}</span>
+            <span
+              className={cn(
+                "font-bold",
+                headerTitle && "underline decoration-dotted",
+              )}
+            >
+              {key === "" ? " " : key}
+            </span>
             {dtypeHeader}
           </div>
         );
 
+        const headerWithTooltip = headerTitle ? (
+          <Tooltip content={headerTitle} delayDuration={300}>
+            {headerWithType}
+          </Tooltip>
+        ) : (
+          headerWithType
+        );
+
         const dataTableColumnHeader = (
           <DataTableColumnHeader
-            header={headerWithType}
+            header={headerWithTooltip}
             column={column}
             calculateTopKRows={calculateTopKRows}
+            table={table}
           />
         );
 
@@ -226,13 +250,13 @@ export function generateColumns<T>({
           isCellSelected,
         );
 
-        const renderedCell = renderCellValue(
+        const renderedCell = renderCellValue({
           column,
           renderValue,
           getValue,
           selectCell,
           cellStyles,
-        );
+        });
 
         // Row headers are bold
         if (rowHeadersSet.has(key)) {
@@ -293,6 +317,7 @@ const PopoutColumn = ({
   rawStringValue,
   contentClassName,
   buttonText,
+  wrapped,
   children,
 }: {
   cellStyles?: string;
@@ -300,13 +325,14 @@ const PopoutColumn = ({
   rawStringValue: string;
   contentClassName?: string;
   buttonText?: string;
+  wrapped?: boolean;
   children: React.ReactNode;
 }) => {
   return (
     <EmotionCacheProvider container={null}>
       <Popover>
         <PopoverTrigger
-          className={cn(cellStyles, "w-fit outline-none")}
+          className={cn(cellStyles, "w-fit outline-hidden")}
           onClick={selectCell}
           onMouseDown={(e) => {
             // Prevent cell underneath from being selected
@@ -314,7 +340,10 @@ const PopoutColumn = ({
           }}
         >
           <span
-            className="cursor-pointer hover:text-link"
+            className={cn(
+              "cursor-pointer hover:text-link",
+              wrapped && COLUMN_WRAPPING_STYLES,
+            )}
             title={rawStringValue}
           >
             {rawStringValue}
@@ -380,13 +409,13 @@ function getCellStyleClass(
   return cn(
     canSelectCell && "cursor-pointer",
     isSelected &&
-      "relative before:absolute before:inset-0 before:bg-[var(--blue-3)] before:rounded before:-z-10 before:mx-[-4px] before:my-[-2px]",
+      "relative before:absolute before:inset-0 before:bg-(--blue-3) before:rounded before:-z-10 before:mx-[-4px] before:my-[-2px]",
     "w-full",
     "text-left",
     "truncate",
     justify === "center" && "text-center",
     justify === "right" && "text-right",
-    wrapped && "whitespace-pre-wrap min-w-[200px] break-words",
+    wrapped && `${COLUMN_WRAPPING_STYLES} break-words`,
   );
 }
 
@@ -402,27 +431,46 @@ function renderAny(value: unknown): string {
   }
 }
 
-function renderDate(
-  value: Date,
-  dataType?: DataType,
-  dtype?: string,
-): React.ReactNode {
+function renderDate({
+  value,
+  dataType,
+  dtype,
+  format,
+  locale,
+}: {
+  value: Date;
+  dataType?: DataType;
+  dtype?: string;
+  format?: DateFormat | null;
+  locale: string;
+}): React.ReactNode {
   const type = dataType === "date" ? "date" : "datetime";
   const timezone = extractTimezone(dtype);
+
+  const exactValue = format
+    ? formatDate(value, format)
+    : exactDateTime(value, timezone, locale);
+
   return (
     <DatePopover date={value} type={type}>
-      {exactDateTime(value, timezone)}
+      {exactValue}
     </DatePopover>
   );
 }
 
-export function renderCellValue<TData, TValue>(
-  column: Column<TData, TValue>,
-  renderValue: () => TValue | null,
-  getValue: () => TValue,
-  selectCell?: () => void,
-  cellStyles?: string,
-) {
+export function renderCellValue<TData, TValue>({
+  column,
+  renderValue,
+  getValue,
+  selectCell,
+  cellStyles,
+}: {
+  column: Column<TData, TValue>;
+  renderValue: () => TValue | null;
+  getValue: () => TValue;
+  selectCell?: () => void;
+  cellStyles?: string;
+}) {
   const value = getValue();
   const format = column.getColumnFormatting?.();
 
@@ -432,7 +480,14 @@ export function renderCellValue<TData, TValue>(
   if (dataType === "datetime" && typeof value === "string") {
     try {
       const date = new Date(value);
-      return renderDate(date, dataType, dtype);
+      const format = getDateFormat(value);
+      return (
+        <WithLocale>
+          {(locale) =>
+            renderDate({ value: date, dataType, dtype, format, locale })
+          }
+        </WithLocale>
+      );
     } catch (error) {
       Logger.error("Error parsing datetime, fallback to string", error);
     }
@@ -440,7 +495,11 @@ export function renderCellValue<TData, TValue>(
 
   if (value instanceof Date) {
     // e.g. 2010-10-07 17:15:00
-    return renderDate(value, dataType, dtype);
+    return (
+      <WithLocale>
+        {(locale) => renderDate({ value, dataType, dtype, locale })}
+      </WithLocale>
+    );
   }
 
   if (typeof value === "string") {
@@ -465,6 +524,7 @@ export function renderCellValue<TData, TValue>(
         rawStringValue={stringValue}
         contentClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm"
         buttonText="X"
+        wrapped={column.getColumnWrapping?.() === "wrap"}
       >
         <UrlDetector parts={parts} />
       </PopoutColumn>
@@ -475,6 +535,15 @@ export function renderCellValue<TData, TValue>(
     return (
       <div onClick={selectCell} className={cellStyles}>
         {column.applyColumnFormatting(value)}
+      </div>
+    );
+  }
+
+  // Format to the correct locale
+  if (typeof value === "number") {
+    return (
+      <div onClick={selectCell} className={cellStyles}>
+        <LocaleNumber value={value} />
       </div>
     );
   }
@@ -506,6 +575,7 @@ export function renderCellValue<TData, TValue>(
         cellStyles={cellStyles}
         selectCell={selectCell}
         rawStringValue={rawStringValue}
+        wrapped={column.getColumnWrapping?.() === "wrap"}
       >
         <JsonOutput data={value} format="tree" className="max-h-64" />
       </PopoutColumn>
@@ -518,3 +588,8 @@ export function renderCellValue<TData, TValue>(
     </div>
   );
 }
+
+const LocaleNumber = ({ value }: { value: number }) => {
+  const format = useNumberFormatter();
+  return format.format(value);
+};

@@ -13,7 +13,7 @@
 
 import marimo
 
-__generated_with = "0.13.11"
+__generated_with = "0.17.4"
 app = marimo.App(width="full")
 
 
@@ -28,13 +28,11 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
+    mo.md(r"""
     # Database explorer
 
     This notebook lets you explore the contents of a database. Start by providing a database URL.
-    """
-    )
+    """)
     return
 
 
@@ -61,7 +59,7 @@ def _(database_url, duckdb):
                 ATTACH DATABASE '{database_url.value}' AS my_db  (TYPE postgres, READ_ONLY);
             """
         )
-    return (my_db,)
+    return
 
 
 @app.cell
@@ -72,7 +70,9 @@ def _(duckdb):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""## Tables""")
+    mo.md(r"""
+    ## Tables
+    """)
     return
 
 
@@ -88,7 +88,9 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""## Other meta table functions""")
+    mo.md(r"""
+    ## Other meta table functions
+    """)
     return
 
 
@@ -138,7 +140,9 @@ def _(function, mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""## Interact with your tables""")
+    mo.md(r"""
+    ## Interact with your tables
+    """)
     return
 
 
@@ -181,7 +185,7 @@ def _(mo, table_select):
 
 
 @app.cell
-def _(limit, mo, my_db, null, table_select_value):
+def _(limit, mo, table_select_value):
     selected_table = mo.sql(
         f"""
         select * from my_db.{table_select_value} LIMIT {limit.value};

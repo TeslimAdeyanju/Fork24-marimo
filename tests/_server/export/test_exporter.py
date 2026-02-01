@@ -12,16 +12,16 @@ from marimo._ast.app import App, InternalApp
 from marimo._config.config import DEFAULT_CONFIG
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._messaging.cell_output import CellChannel, CellOutput
+from marimo._messaging.msgspec_encoder import encode_json_str
 from marimo._messaging.ops import CellOp
-from marimo._plugins.core.json_encoder import WebComponentEncoder
 from marimo._server.export import (
     export_as_wasm,
     run_app_then_export_as_ipynb,
     run_app_until_completion,
 )
 from marimo._server.export.exporter import Exporter
-from marimo._server.file_manager import AppFileManager
 from marimo._server.models.export import ExportAsHTMLRequest
+from marimo._server.notebook import AppFileManager
 from marimo._server.session.session_view import SessionView
 from marimo._utils.marimo_path import MarimoPath
 from tests.mocks import snapshotter
@@ -422,7 +422,9 @@ def _print_messages(messages: list[CellOp]) -> str:
                 "status": message.status,
             }
         )
-    return json.dumps(result, indent=2, cls=WebComponentEncoder)
+    # Use msgspec for encoding, then format with json for readable snapshots
+    encoded = encode_json_str(result)
+    return json.dumps(json.loads(encoded), indent=2)
 
 
 def _as_list(data: Any) -> list[Any]:
@@ -493,7 +495,7 @@ async def test_run_until_completion_with_console_output(mock_echo: MagicMock):
     )
 
 
-def test_export_as_html_with_serialization():
+def test_export_as_html_with_serialization(session_view: SessionView):
     """Test HTML export uses new serialization approach correctly."""
     app = App()
 
@@ -510,7 +512,6 @@ def test_export_as_html_with_serialization():
         return (mo,)
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     # Add some test data to session view
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
@@ -572,7 +573,7 @@ def test_export_as_html_with_serialization():
     assert 'data-marimo="true"' in html
 
 
-def test_export_as_html_without_code():
+def test_export_as_html_without_code(session_view: SessionView):
     """Test HTML export clears code when include_code=False."""
     app = App()
 
@@ -583,7 +584,6 @@ def test_export_as_html_without_code():
         return secret_value
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
     session_view.cell_operations[cell_ids[0]] = CellOp(
@@ -634,7 +634,7 @@ def test_export_as_html_without_code():
     # The exact format depends on template implementation
 
 
-def test_export_as_html_with_files():
+def test_export_as_html_with_files(session_view: SessionView):
     """Test HTML export includes virtual files."""
     app = App()
 
@@ -643,7 +643,6 @@ def test_export_as_html_with_files():
         return "test"
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
     session_view.cell_operations[cell_ids[0]] = CellOp(
@@ -682,7 +681,7 @@ def test_export_as_html_with_files():
     assert "data:" in html
 
 
-def test_export_as_html_with_cell_configs():
+def test_export_as_html_with_cell_configs(session_view: SessionView):
     """Test HTML export preserves cell configurations through serialization."""
     app = App()
 
@@ -691,7 +690,6 @@ def test_export_as_html_with_cell_configs():
         return "configured"
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
     session_view.cell_operations[cell_ids[0]] = CellOp(
@@ -731,7 +729,7 @@ def test_export_as_html_with_cell_configs():
     assert "configured" in html
 
 
-def test_export_as_html_preserves_output_order():
+def test_export_as_html_preserves_output_order(session_view: SessionView):
     """Test HTML export preserves cell execution order in session snapshot."""
     app = App()
 
@@ -748,7 +746,6 @@ def test_export_as_html_preserves_output_order():
         return "third"
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
 
@@ -790,7 +787,7 @@ def test_export_as_html_preserves_output_order():
     assert "output_2" in html
 
 
-def test_export_as_html_with_error_outputs():
+def test_export_as_html_with_error_outputs(session_view: SessionView):
     """Test HTML export handles error outputs correctly."""
     app = App()
 
@@ -799,7 +796,6 @@ def test_export_as_html_with_error_outputs():
         raise ValueError("Test error")
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
 
@@ -807,7 +803,6 @@ def test_export_as_html_with_error_outputs():
     from marimo._messaging.errors import MarimoExceptionRaisedError
 
     error = MarimoExceptionRaisedError(
-        type="exception",
         exception_type="ValueError",
         msg="Test error",
         raising_cell=cell_ids[0],
@@ -845,7 +840,7 @@ def test_export_as_html_with_error_outputs():
     assert "Test error" in html or "ValueError" in html
 
 
-def test_export_as_html_code_hash_consistency():
+def test_export_as_html_code_hash_consistency(session_view: SessionView):
     """Test HTML export includes correct code hash regardless of include_code setting."""
     app = App()
 
@@ -854,7 +849,6 @@ def test_export_as_html_code_hash_consistency():
         return "test"
 
     file_manager = AppFileManager.from_app(InternalApp(app))
-    session_view = SessionView()
 
     cell_ids = list(file_manager.app.cell_manager.cell_ids())
     session_view.cell_operations[cell_ids[0]] = CellOp(
@@ -924,3 +918,224 @@ def test_export_as_html_code_hash_consistency():
     assert '"code": "return' in html_with_code, (
         "Cell code should be present when include_code=True"
     )
+
+
+def test_export_html_replaces_virtual_files_in_outputs(
+    session_view: SessionView,
+):
+    """Test that virtual file URLs in HTML outputs are replaced with data URIs."""
+    app = App()
+
+    @app.cell()
+    def test_cell():
+        import marimo as mo
+
+        return mo.image(src="test.png")
+
+    file_manager = AppFileManager.from_app(InternalApp(app))
+
+    cell_ids = list(file_manager.app.cell_manager.cell_ids())
+
+    # Create HTML output with a virtual file reference
+    html_with_virtual_file = (
+        '<img src="./@file/100-test.png" alt="Test image">'
+    )
+
+    session_view.cell_operations[cell_ids[0]] = CellOp(
+        cell_id=cell_ids[0],
+        status="idle",
+        output=CellOutput(
+            channel=CellChannel.OUTPUT,
+            mimetype="text/html",
+            data=html_with_virtual_file,
+        ),
+        console=[],
+        timestamp=0,
+    )
+    session_view.last_executed_code[cell_ids[0]] = (
+        "import marimo as mo\nreturn mo.image(src='test.png')"
+    )
+
+    exporter = Exporter()
+
+    # Include the virtual file in request.files
+    # Note: request.files uses /@file/ format (without the ./)
+    request = ExportAsHTMLRequest(
+        download=True,
+        files=["/@file/100-test.png"],
+        include_code=True,
+    )
+
+    # Mock read_virtual_file to return test image data
+    with patch(
+        "marimo._server.export.dom_traversal.read_virtual_file"
+    ) as mock_read:
+        mock_read.return_value = b"fake_image_data"
+
+        html, filename = exporter.export_as_html(
+            filename=file_manager.filename,
+            app=file_manager.app,
+            session_view=session_view,
+            display_config=DEFAULT_CONFIG["display"],
+            request=request,
+        )
+
+    assert filename == "notebook.html"
+
+    # Virtual file should be replaced with data URI in the output
+    assert "./@file/100-test.png" not in html
+    assert "data:image/png;base64," in html
+
+    # Verify the base64-encoded data is present (fake_image_data)
+    import base64
+
+    expected_b64 = base64.b64encode(b"fake_image_data").decode()
+    assert expected_b64 in html
+
+
+def test_export_html_replaces_multiple_virtual_files_complex(
+    session_view: SessionView,
+):
+    """Test virtual file replacement with multiple files and nested structures."""
+    app = App()
+
+    @app.cell()
+    def cell_1():
+        import marimo as mo
+
+        return mo.image(src="chart.png")
+
+    @app.cell()
+    def cell_2():
+        import marimo as mo
+
+        return mo.md("![Plot](./@file/200-plot.png)")
+
+    @app.cell()
+    def cell_3():
+        # Cell with both virtual file and external URL
+        return '<div><img src="./@file/300-diagram.svg"><img src="https://example.com/external.png"></div>'
+
+    file_manager = AppFileManager.from_app(InternalApp(app))
+    cell_ids = list(file_manager.app.cell_manager.cell_ids())
+
+    # Cell 1: Image with virtual file
+    session_view.cell_operations[cell_ids[0]] = CellOp(
+        cell_id=cell_ids[0],
+        status="idle",
+        output=CellOutput(
+            channel=CellChannel.OUTPUT,
+            mimetype="text/html",
+            data='<img src="./@file/100-chart.png" alt="Chart">',
+        ),
+        console=[],
+        timestamp=0,
+    )
+    session_view.last_executed_code[cell_ids[0]] = (
+        "import marimo as mo\nreturn mo.image(src='chart.png')"
+    )
+
+    # Cell 2: Markdown with virtual file
+    session_view.cell_operations[cell_ids[1]] = CellOp(
+        cell_id=cell_ids[1],
+        status="idle",
+        output=CellOutput(
+            channel=CellChannel.OUTPUT,
+            mimetype="text/html",
+            data='<p><img src="./@file/200-plot.png" alt="Plot"></p>',
+        ),
+        console=[],
+        timestamp=1,
+    )
+    session_view.last_executed_code[cell_ids[1]] = (
+        "import marimo as mo\nreturn mo.md('![Plot](./@file/200-plot.png)')"
+    )
+
+    # Cell 3: Mixed - virtual file and external URL
+    session_view.cell_operations[cell_ids[2]] = CellOp(
+        cell_id=cell_ids[2],
+        status="idle",
+        output=CellOutput(
+            channel=CellChannel.OUTPUT,
+            mimetype="text/html",
+            data='<div><img src="./@file/300-diagram.svg"><img src="https://example.com/external.png"></div>',
+        ),
+        console=[],
+        timestamp=2,
+    )
+    session_view.last_executed_code[cell_ids[2]] = (
+        'return \'<div><img src="./@file/300-diagram.svg"><img src="https://example.com/external.png"></div>\''
+    )
+
+    exporter = Exporter()
+
+    # Include all virtual files plus an extra one not in outputs
+    # Note: request.files uses /@file/ format (without the ./)
+    request = ExportAsHTMLRequest(
+        download=True,
+        files=[
+            "/@file/100-chart.png",
+            "/@file/200-plot.png",
+            "/@file/300-diagram.svg",
+            "/@file/400-unused.txt",  # Not in any output
+        ],
+        include_code=True,
+    )
+
+    # Mock read_virtual_file
+    def mock_read_side_effect(filename: str, byte_length: int) -> bytes:
+        """Return different mock data based on filename."""
+        del byte_length
+        if filename == "chart.png":
+            return b"chart_data"
+        elif filename == "plot.png":
+            return b"plot_data"
+        elif filename == "diagram.svg":
+            return b"<svg>diagram</svg>"
+        elif filename == "unused.txt":
+            return b"unused_content"
+        return b"default_data"
+
+    with (
+        patch(
+            "marimo._server.export.dom_traversal.read_virtual_file"
+        ) as mock_read_dom,
+        patch(
+            "marimo._server.export.exporter.read_virtual_file"
+        ) as mock_read_exporter,
+    ):
+        mock_read_dom.side_effect = mock_read_side_effect
+        mock_read_exporter.side_effect = mock_read_side_effect
+
+        html, filename = exporter.export_as_html(
+            filename=file_manager.filename,
+            app=file_manager.app,
+            session_view=session_view,
+            display_config=DEFAULT_CONFIG["display"],
+            request=request,
+        )
+
+    assert filename == "notebook.html"
+
+    # Verify base64-encoded data is present for replaced files
+    import base64
+
+    chart_b64 = base64.b64encode(b"chart_data").decode()
+    plot_b64 = base64.b64encode(b"plot_data").decode()
+    diagram_b64 = base64.b64encode(b"<svg>diagram</svg>").decode()
+
+    # At least some of the base64 data should be in the HTML
+    # (virtual files are replaced with data URIs)
+    assert chart_b64 in html, "Chart data should be embedded as base64"
+    assert plot_b64 in html, "Plot data should be embedded as base64"
+    assert diagram_b64 in html, "Diagram data should be embedded as base64"
+
+    # Data URIs should be present
+    assert "data:image/png;base64," in html  # For chart and plot
+    assert "data:image/svg+xml;base64," in html  # For diagram
+
+    # External URL should remain unchanged
+    assert "https://example.com/external.png" in html
+
+    # Virtual file URLs should be replaced (though they may be URL-encoded in JSON)
+    # So we just check that the base64 data is present, which proves replacement worked

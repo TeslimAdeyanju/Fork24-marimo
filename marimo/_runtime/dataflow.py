@@ -4,13 +4,12 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, cast
 
 from marimo import _loggers
-from marimo._ast.cell import (
-    CellImpl,
-)
+from marimo._ast.cell import CellImpl
 from marimo._ast.compiler import code_key
+from marimo._ast.sql_visitor import SQLRef, SQLTypes
 from marimo._ast.variables import is_mangled_local
 from marimo._ast.visitor import ImportData, Name, VariableData
 from marimo._runtime.executor import (
@@ -29,7 +28,7 @@ Edge = tuple[CellId_t, CellId_t]
 # The first entry is the source node; the second entry is a list of defs from
 # the source read by the destination; and the third entry is the destination
 # node.
-EdgeWithVar = tuple[CellId_t, list[str], CellId_t]
+EdgeWithVar = tuple[CellId_t, tuple[str, ...], CellId_t]
 
 LOGGER = _loggers.marimo_logger()
 
@@ -59,6 +58,10 @@ class DirectedGraph:
 
     # A mapping from defs to the cells that define them
     definitions: dict[Name, set[CellId_t]] = field(default_factory=dict)
+    typed_definitions: dict[tuple[Name, str], set[CellId_t]] = field(
+        default_factory=dict
+    )
+    definition_types: dict[Name, set[str]] = field(default_factory=dict)
 
     # The set of cycles in the graph
     cycles: set[tuple[Edge, ...]] = field(default_factory=set)
@@ -96,16 +99,114 @@ class DirectedGraph:
         """
         if language == "sql":
             # For SQL, only return SQL cells that reference the name
-            return {
-                cid
-                for cid, cell in self.cells.items()
-                if name in cell.refs and cell.language == "sql"
-            }
+            cells = set()
+            for cid, cell in self.cells.items():
+                if cell.language != "sql":
+                    continue
+
+                for ref in cell.refs:
+                    # Direct reference match
+                    if ref == name:
+                        cells.add(cid)
+                        break
+
+                    sql_ref = cell.sql_refs.get(ref)
+
+                    kind: SQLTypes = "any"
+                    if name in cell.variable_data:
+                        variable_data = cell.variable_data[name][-1]
+                        kind = cast(SQLTypes, variable_data.kind)
+
+                    # Hierarchical reference match
+                    if sql_ref and sql_ref.matches_hierarchical_ref(
+                        name, ref, kind
+                    ):
+                        cells.add(cid)
+                        break
+
+            return cells
         else:
             # For Python, return all cells that reference the name
             return {
                 cid for cid, cell in self.cells.items() if name in cell.refs
             }
+
+    def _find_sql_hierarchical_matches(
+        self, sql_ref: SQLRef
+    ) -> list[tuple[set[CellId_t], Name]]:
+        """
+        This method searches through all definitions in the graph to find cells
+        that define the individual components (table, schema, or catalog) of the
+        hierarchical reference.
+
+        For example, given a reference "my_schema.my_table", this method will:
+        - Look for cells that define a table/view named "my_table"
+        - Look for cells that define a catalog named "my_schema"
+          (when the reference has at least 2 parts)
+
+        Args:
+            sql_ref: A hierarchical SQL reference (e.g., "schema.table",
+                  "catalog.schema.table") to find matching definitions for.
+
+        Returns:
+            A list of tuples containing:
+            - A set of cell IDs that define components of the hierarchical reference
+            - The definition of the name that was found (e.g., "schema.table" -> "table")
+        """
+        matching_cell_ids_list = []
+
+        for (def_name, kind), cell_ids in self.typed_definitions.items():
+            # Match table/view definitions
+            if sql_ref.contains_hierarchical_ref(def_name, kind):
+                matching_cell_ids_list.append((cell_ids, def_name))
+
+        return matching_cell_ids_list
+
+    def _is_valid_cell_reference(
+        self, cell_id: CellId_t, variable_name: Name
+    ) -> bool:
+        """Check if a cell reference is valid and log errors if not."""
+        if cell_id not in self.cells:
+            LOGGER.error(
+                "Variable %s is defined in cell %s, but is not in the graph",
+                variable_name,
+                cell_id,
+            )
+            return False
+        return True
+
+    def _resolve_variable_name(
+        self,
+        name: Name,
+        other_cell: CellImpl,
+        sql_ref: Optional[SQLRef],
+        sql_matches: list[tuple[set[CellId_t], Name]],
+    ) -> Name:
+        """
+        Resolve the variable name to use when checking if it exists in another cell.
+
+        For regular (non-SQL) references, returns the original name unchanged.
+        For SQL hierarchical references, finds the variable name from sql_matches that
+        is actually defined in the other_cell.
+
+        Example:
+            cell_1: CREATE SCHEMA schema_name
+            cell_2: CREATE TABLE schema_name.table_name
+            cell_3: FROM schema_name.table_name SELECT *
+
+            When cell_3 references "schema_name.table_name":
+            - For cell_1: returns "schema_name" (what cell_1 actually defines)
+            - For cell_2: returns "table_name" (what cell_2 actually defines)
+        """
+        if not sql_ref or name in other_cell.variable_data:
+            return name
+
+        # For SQL hierarchical references, find the matching variable name
+        for _, matching_variable_name in sql_matches:
+            if matching_variable_name in other_cell.variable_data:
+                return matching_variable_name
+
+        return name
 
     def get_path(self, source: CellId_t, dst: CellId_t) -> list[Edge]:
         """Get a path from `source` to `dst`, if any."""
@@ -152,8 +253,37 @@ class DirectedGraph:
             self.children[cell_id] = children
             self.siblings[cell_id] = siblings
             self.parents[cell_id] = parents
+
+            # First, we process the variables that this cell defines. Any cell
+            # that refers to a defined variable becomes a child of this cell;
+            # any cell that defines a variable defined by this cell becomes
+            # a sibling.
             for name, variable_data in cell.variable_data.items():
-                self.definitions.setdefault(name, set()).add(cell_id)
+                # NB. Only the last definition matters.
+                # Technically more nuanced with branching statements, but this is
+                # the best we can do with static analysis.
+                variable = variable_data[-1]
+                typed_def = (name, variable.kind)
+
+                if (
+                    name in self.definitions
+                    and typed_def not in self.typed_definitions
+                ):
+                    # Duplicate if the qualified name is no different
+                    if (
+                        variable.qualified_name == name
+                        or variable.language != "sql"
+                    ):
+                        self.definitions[name].add(cell_id)
+                else:
+                    self.definitions.setdefault(name, set()).add(cell_id)
+                self.typed_definitions.setdefault(typed_def, set()).add(
+                    cell_id
+                )
+                self.definition_types.setdefault(name, set()).add(
+                    variable.kind
+                )
+
                 for sibling in self.definitions[name]:
                     # TODO(akshayka): Distinguish between Python/SQL?
                     if sibling != cell_id:
@@ -178,22 +308,76 @@ class DirectedGraph:
                 for child in referring_cells:
                     self.parents[child].add(cell_id)
 
+            # Next, we process the cells references. The cell becomes a child
+            # of cells that define its referenced variables. We also have
+            # special logic for handling references that are deleted by this cell,
+            # since cells that delete variables that were defined elsewhere
+            # are made children of cells that reference that variable.
+
             for name in cell.refs:
+                # First, for each referenced variable, we add cells that define
+                # that variable as parents
                 other_ids_defining_name: set[CellId_t] = (
                     self.definitions[name]
                     if name in self.definitions
                     else set()
                 ) - set((cell_id,))
-                # if other is empty, this means that the user is going to
-                # get a NameError once the cell is run, unless the symbol
-                # is say a builtin
+
+                variable_name: Name = name
+
+                # Handle SQL matching for hierarchical references
+                sql_matches: list[tuple[set[CellId_t], Name]] = []
+                sql_ref = cell.sql_refs.get(name)
+                if sql_ref:
+                    sql_matches = self._find_sql_hierarchical_matches(sql_ref)
+                    for matching_cell_ids, _ in sql_matches:
+                        if cell_id in matching_cell_ids:
+                            LOGGER.debug(
+                                "Cell %s is referencing itself", cell_id
+                            )
+                            continue
+                        other_ids_defining_name.update(matching_cell_ids)
+
+                # If other_ids_defining_name is empty, the user will get a
+                # NameError at runtime (unless the symbol is a builtin).
                 for other_id in other_ids_defining_name:
-                    language = (
-                        self.cells[other_id].variable_data[name][-1].language
+                    if other_id == cell_id:
+                        LOGGER.error("Cell %s is referencing itself", cell_id)
+                        continue
+                    if not self._is_valid_cell_reference(
+                        other_id, variable_name
+                    ):
+                        continue
+                    other_cell = self.cells[other_id]
+
+                    variable_name = self._resolve_variable_name(
+                        variable_name, other_cell, sql_ref, sql_matches
                     )
+
+                    # If we don't have a matching variable name, skip
+                    if variable_name not in other_cell.variable_data:
+                        LOGGER.error(
+                            "Variable %s is not defined in cell %s",
+                            variable_name,
+                            other_id,
+                        )
+                        continue
+
+                    other_variable_data = other_cell.variable_data[
+                        variable_name
+                    ][-1]
+                    language = other_variable_data.language
                     if language == "sql" and cell.language == "python":
                         # SQL table/db def -> Python ref is not an edge
                         continue
+                    if language == "sql" and cell.language == "sql":
+                        # Edges between SQL cells need to respect hierarchy.
+                        if sql_ref and not sql_ref.matches_hierarchical_ref(
+                            variable_name,
+                            other_variable_data.qualified_name or name,
+                            kind=cast(SQLTypes, other_variable_data.kind),
+                        ):
+                            continue
                     parents.add(other_id)
                     # we are adding an edge (other_id, cell_id). If there
                     # is a path from cell_id to other_id, then the new
@@ -202,6 +386,53 @@ class DirectedGraph:
                     if path:
                         self.cycles.add(tuple([(other_id, cell_id)] + path))
                     self.children[other_id].add(cell_id)
+
+                # Next, any cell that deletes this referenced variable is made
+                # a child of this cell. In particular, if a cell deletes a
+                # variable, it becomes a child of all other cells that
+                # reference that variable. This means that if two cells delete
+                # the same variable, they form a cycle.
+                #
+                # For example, two cells
+                #
+                #   cell u: x
+                #   cell v: del x
+                #
+                # v becomes a child of u.
+                #
+                # Another example:
+                #
+                #   cell u: del x
+                #   cell v: del x
+                #
+                # u and v form a cycle.
+                other_ids_deleting_name: set[CellId_t] = set(
+                    cid
+                    for cid in self.get_referring_cells(
+                        name, language="python"
+                    )
+                    if name in self.cells[cid].deleted_refs
+                ) - set((cell_id,))
+                for v in other_ids_deleting_name:
+                    path = self.get_path(v, cell_id)
+                    if path:
+                        self.cycles.add(tuple([(cell_id, v)] + path))
+                    self.parents[v].add(cell_id)
+                children.update(other_ids_deleting_name)
+
+            # Finally, if this cell deletes a variable, we make it a child of
+            # all other cells that reference this variable.
+            for name in cell.deleted_refs:
+                referring_cells = self.get_referring_cells(
+                    name, language="python"
+                ) - set((cell_id,))
+                for other_id in referring_cells:
+                    parents.add(other_id)
+                    path = self.get_path(cell_id, other_id)
+                    if path:
+                        self.cycles.add(tuple([(other_id, cell_id)] + path))
+                    self.children[other_id].add(cell_id)
+
         LOGGER.debug("Registered cell %s and released graph lock", cell_id)
         if self.is_any_ancestor_stale(cell_id):
             self.set_stale(set([cell_id]))
@@ -278,6 +509,10 @@ class DirectedGraph:
                     # No more cells define this name, so we remove it from the
                     # graph
                     del self.definitions[name]
+                    # Clean up all typed definitions
+                    for typed_def in self.definition_types[name]:
+                        del self.typed_definitions[(name, typed_def)]
+                    del self.definition_types[name]
 
             # Remove cycles that are broken from removing this cell.
             edges = [(cell_id, child) for child in self.children[cell_id]] + [
@@ -342,6 +577,7 @@ class DirectedGraph:
         return imports
 
     def get_multiply_defined(self) -> list[Name]:
+        """Return a list of names that are defined in multiple cells"""
         names: list[Name] = []
         for name, definers in self.definitions.items():
             if len(definers) > 1:
@@ -428,6 +664,32 @@ class DirectedGraph:
         if inclusive:
             return processed | refs
         return processed - refs
+
+    def copy(self, filename: None | str = None) -> DirectedGraph:
+        """Return a deep copy of the graph by recompiling all cells.
+
+        This is mainly useful in the case where recompilation must be done
+        due to a dynamically changing notebook, where the line cache must be
+        consistent with the cell code, e.g. for debugging.
+        """
+        from marimo._ast.compiler import compile_cell
+
+        graph = DirectedGraph()
+        with self.lock:
+            for cid, old_cell in self.cells.items():
+                cell = compile_cell(
+                    old_cell.code,
+                    cell_id=cid,
+                    filename=filename,
+                )
+                # Carry over import data manually
+                imported_defs = old_cell.import_workspace.imported_defs
+                is_import_block = old_cell.import_workspace.is_import_block
+                cell.import_workspace.imported_defs = imported_defs
+                cell.import_workspace.is_import_block = is_import_block
+                # Reregister
+                graph.register_cell(cid, cell)
+        return graph
 
 
 def transitive_closure(

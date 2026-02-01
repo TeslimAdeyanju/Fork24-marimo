@@ -8,30 +8,28 @@
 
 import marimo
 
-__generated_with = "0.9.20"
+__generated_with = "0.17.2"
 app = marimo.App()
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        # Using Leafmap
+def _(mo):
+    mo.md("""
+    # Using Leafmap
 
-        This example shows how to render a `leafmap.Map` in marimo; just output it like any other object.
-        """
-    )
+    This example shows how to render a `leafmap.Map` in marimo; just output it like any other object.
+    """)
     return
 
 
 @app.cell
-def __():
+def _():
     import leafmap
     return (leafmap,)
 
 
 @app.cell
-def __(leafmap):
+def _(leafmap):
     m = leafmap.Map(center=(40, -100), zoom=4, height="400px")
     m.add_basemap("HYBRID")
     m.add_basemap("Esri.NatGeoWorldMap")
@@ -41,11 +39,11 @@ def __(leafmap):
         attribution="Google",
     )
     m
-    return (m,)
+    return
 
 
 @app.cell
-def __():
+def _():
     import marimo as mo
     return (mo,)
 

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
+import shutil
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import pytest
 
+from marimo._dependencies.dependencies import DependencyManager
+from marimo._utils import async_path
 from marimo._utils.file_watcher import FileWatcherManager, PollingFileWatcher
 
 
@@ -30,7 +32,7 @@ async def test_polling_file_watcher() -> None:
 
     # Wait a bit and then modify the file
     await asyncio.sleep(0.2)
-    with open(tmp_path, "w") as f:  # noqa: ASYNC101 ASYNC230
+    with open(tmp_path, "w") as f:  # noqa: ASYNC230
         f.write("modification")
 
     # Wait for the watcher to detect the change
@@ -45,10 +47,6 @@ async def test_polling_file_watcher() -> None:
     assert callback_calls[0] == tmp_path
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="File watcher tests require Python 3.10+",
-)
 async def test_file_watcher_manager() -> None:
     # Create two temporary files
     with (
@@ -87,7 +85,7 @@ async def test_file_watcher_manager() -> None:
 
         # Modify file1
         await asyncio.sleep(0.2)
-        with open(tmp_path1, "w") as f:  # noqa: ASYNC101 ASYNC230
+        with open(tmp_path1, "w") as f:  # noqa: ASYNC230
             f.write("modification1")
 
         # Wait for callbacks
@@ -104,7 +102,7 @@ async def test_file_watcher_manager() -> None:
         manager.remove_callback(tmp_path1, callback1)
 
         # Modify file1 again
-        with open(tmp_path1, "w") as f:  # noqa: ASYNC101 ASYNC230
+        with open(tmp_path1, "w") as f:  # noqa: ASYNC230
             f.write("modification2")
 
         # Wait for callbacks
@@ -116,7 +114,7 @@ async def test_file_watcher_manager() -> None:
         assert len(callback3_calls) == 0
 
         # Modify file2
-        with open(tmp_path2, "w") as f:  # noqa: ASYNC101 ASYNC230
+        with open(tmp_path2, "w") as f:  # noqa: ASYNC230
             f.write("modification3")
 
         # Wait for callbacks
@@ -133,9 +131,9 @@ async def test_file_watcher_manager() -> None:
         manager.remove_callback(tmp_path2, callback3)
 
         # Modify both files
-        with open(tmp_path1, "w") as f:  # noqa: ASYNC101 ASYNC230
+        with open(tmp_path1, "w") as f:  # noqa: ASYNC230
             f.write("modification4")
-        with open(tmp_path2, "w") as f:  # noqa: ASYNC101 ASYNC230
+        with open(tmp_path2, "w") as f:  # noqa: ASYNC230
             f.write("modification4")
 
         # Wait for potential callbacks
@@ -151,3 +149,60 @@ async def test_file_watcher_manager() -> None:
         manager.stop_all()
         os.remove(tmp_path1)
         os.remove(tmp_path2)
+
+
+# This test is not working and watchdog makes CI hang in other areas
+# So we test this manually with `uv run --with=watchdog marimo edit nb.py --watch`
+@pytest.mark.xfail(reason="Test not working")
+@pytest.mark.skipif(
+    not DependencyManager.watchdog.has(),
+    reason="watchdog not installed",
+)
+async def test_watchdog_file_moved() -> None:
+    """Test that watchdog detects when a temp file is moved to the target path.
+
+    This simulates editors like Claude Code that save by creating a temp file
+    and then moving it to the target location.
+    """
+    from marimo._utils.file_watcher import _create_watchdog
+
+    with NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        tmp_file.write(b"initial content")
+
+    callback_calls: list[Path] = []
+
+    async def test_callback(path: Path) -> None:
+        callback_calls.append(path)
+
+    try:
+        # Create watcher
+        loop = asyncio.get_event_loop()
+        watcher = _create_watchdog(tmp_path, test_callback, loop)
+        watcher.start()
+
+        # Wait for watcher to be ready
+        await asyncio.sleep(0.2)
+
+        # Simulate Claude Code save pattern: create temp file and move it
+        temp_save_path = tmp_path.parent / f"{tmp_path.name}.tmp.12345"
+        with open(temp_save_path, "w") as f:  # noqa: ASYNC230
+            f.write("modified content")
+
+        # Move temp file to target (simulating atomic save)
+        shutil.move(str(temp_save_path), str(tmp_path))
+
+        # Wait for the watcher to detect the move
+        await asyncio.sleep(0.3)
+
+        # Stop watcher
+        watcher.stop()
+
+        # Assert that the callback was called
+        assert len(callback_calls) >= 1
+        assert callback_calls[0] == tmp_path
+
+    finally:
+        # Cleanup
+        if await async_path.exists(tmp_path):
+            os.remove(tmp_path)

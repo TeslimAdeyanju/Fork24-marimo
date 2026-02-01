@@ -11,7 +11,9 @@ import pytest
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._messaging.mimetypes import KnownMimeType
 from marimo._output.formatters.df_formatters import polars_dot_to_mermaid
-from marimo._output.formatters.formatters import register_formatters
+from marimo._output.formatters.formatters import (
+    register_formatters,
+)
 from marimo._output.formatting import (
     Plain,
     as_dom_node,
@@ -32,6 +34,32 @@ def test_path_finder_find_spec() -> None:
         "test_formatters", [os.path.dirname(__file__)]
     )
     assert spec is not None
+    assert (
+        importlib.machinery.PathFinder.find_spec.__module__
+        == "marimo._output.formatters.formatters"
+    )
+
+
+def test_path_finder_find_spec_non_recursive() -> None:
+    # exercises a bug surfaced in
+    # https://github.com/marimo-team/marimo/issues/6072
+    register_formatters()
+    spec = importlib.machinery.PathFinder.find_spec(
+        "test_formatters", [os.path.dirname(__file__)]
+    )
+    assert spec is not None
+    assert (
+        importlib.machinery.PathFinder.find_spec.__module__
+        == "marimo._output.formatters.formatters"
+    )
+    original = importlib.machinery.PathFinder.find_spec.__func__
+
+    register_formatters()
+    spec = importlib.machinery.PathFinder.find_spec(
+        "test_formatters", [os.path.dirname(__file__)]
+    )
+    assert spec is not None
+    assert importlib.machinery.PathFinder.find_spec.__func__ == original
 
 
 HAS_DEPS = DependencyManager.pandas.has() and DependencyManager.polars.has()
@@ -157,7 +185,7 @@ def test_repr_markdown():
     assert mime == "text/html"
     assert (
         content
-        == '<span class="markdown prose dark:prose-invert"><h1 id="hello-world">Hello, World!</h1></span>'  # noqa: E501
+        == '<span class="markdown prose dark:prose-invert contents"><h1 id="hello-world">Hello, World!</h1></span>'  # noqa: E501
     )
 
 
@@ -173,7 +201,7 @@ def test_repr_latex():
     assert mime == "text/html"
     assert (
         content
-        == '<span class="markdown prose dark:prose-invert"><span class="paragraph"><marimo-tex class="arithmatex">||(f(x) = e^x||)</marimo-tex></span></span>'  # noqa: E501
+        == '<span class="markdown prose dark:prose-invert contents"><span class="paragraph"><marimo-tex class="arithmatex">||(f(x) = e^x||)</marimo-tex></span></span>'  # noqa: E501
     )
 
 
@@ -401,7 +429,7 @@ def test_repr_mimebundle_with_markdown():
     mime, content = formatter(obj)
     assert mime == "application/vnd.marimo+mimebundle"
     assert content == {
-        "text/html": '<span class="markdown prose dark:prose-invert"><h1 id="hello-world">Hello, World!</h1></span>',
+        "text/html": '<span class="markdown prose dark:prose-invert contents"><h1 id="hello-world">Hello, World!</h1></span>',
         "text/markdown": "# Hello, World!",
     }
 
@@ -437,9 +465,57 @@ def test_repr_mimebundle_with_latex():
     mime, content = formatter(obj)
     assert mime == "application/vnd.marimo+mimebundle"
     assert content == {
-        "text/html": '<span class="markdown prose dark:prose-invert"><span class="paragraph"><marimo-tex class="arithmatex">||(e^x||)</marimo-tex></span></span>',
+        "text/html": '<span class="markdown prose dark:prose-invert contents"><span class="paragraph"><marimo-tex class="arithmatex">||(e^x||)</marimo-tex></span></span>',
         "text/latex": r"$e^x$",
     }
+
+
+def test_repr_mimebundle_with_tuple_return():
+    """Test _repr_mimebundle_ that returns (data, metadata) tuple."""
+
+    class ReprMimeBundleTuple:
+        def _repr_mimebundle_(self):
+            data = {
+                "text/html": "<h1>Hello, World!</h1>",
+                "text/plain": "Hello, World!",
+            }
+            metadata = {"text/html": {"width": 100, "height": 50}}
+            return data, metadata
+
+    obj = ReprMimeBundleTuple()
+    formatter = get_formatter(obj)
+    assert formatter is not None
+    mime, content = formatter(obj)
+    assert mime == "application/vnd.marimo+mimebundle"
+    # Should contain the HTML (text/plain should be removed since other repr exists)
+    assert content == {"text/html": "<h1>Hello, World!</h1>"}
+
+
+def test_repr_mimebundle_with_tuple_return_image():
+    """Test _repr_mimebundle_ with tuple return containing binary image data."""
+
+    class ReprMimeBundleWithImage:
+        def _repr_mimebundle_(self):
+            # Simulate binary PNG data (minimal valid PNG header)
+            fake_png_data = b"\x89PNG\r\n\x1a\nfake_png_data"
+            data = {
+                "image/png": fake_png_data,
+                "text/html": "<span>Image representation</span>",
+            }
+            metadata = {"image/png": {"width": 200, "height": 80}}
+            return data, metadata
+
+    obj = ReprMimeBundleWithImage()
+    formatter = get_formatter(obj)
+    assert formatter is not None
+    mime, content = formatter(obj)
+    assert mime == "application/vnd.marimo+mimebundle"
+    # Should contain both image and HTML
+    assert "image/png" in content
+    assert "text/html" in content
+    # Image data should be converted to data URL
+    assert content["image/png"].startswith("data:image/png;base64,")
+    assert content["text/html"] == "<span>Image representation</span>"
 
 
 def test_display_protocol_takes_precedence() -> None:
@@ -486,6 +562,7 @@ def test_polars_dot_to_mermaid() -> None:
 
 
 @pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
+@pytest.mark.xfail(reason="TODO: skipping since upstream broken this test")
 def test_polars_dot_to_mermaid_complex() -> None:
     import polars as pl
 
@@ -520,3 +597,239 @@ def test_polars_dot_to_mermaid_handles_urls() -> None:
         == """graph TD
 \tp1[\"Check [<a href='https://example.com'>https://example.com</a>] for more\"]"""
     )
+
+
+def test_as_html_basic_types() -> None:
+    """Test as_html with basic Python types."""
+    register_formatters()
+
+    # String
+    result = as_html("hello world")
+    assert result.text == "<span>hello world</span>"
+
+    # Integer
+    result = as_html(42)
+    assert result.text == "<span>42</span>"
+
+    # Float
+    result = as_html(3.14)
+    assert result.text == "<span>3.14</span>"
+
+    # Boolean
+    result = as_html(True)
+    assert result.text == "<span>True</span>"
+
+    # None
+    result = as_html(None)
+    assert result.text == "<span>None</span>"
+
+    # List
+    result = as_html([1, 2, 3])
+    assert (
+        result.text
+        == "<marimo-json-output data-json-data='[1,2,3]' data-value-types='&quot;python&quot;'></marimo-json-output>"
+    )
+
+    # Dict
+    result = as_html({"key": "value"})
+    assert "<marimo-json" in result.text
+
+
+def test_as_html_with_html_object() -> None:
+    """Test as_html when passed an Html object - should return it unchanged."""
+    from marimo._output.hypertext import Html
+
+    html_obj = Html("<h1>Hello</h1>")
+    result = as_html(html_obj)
+
+    # Should return the same object
+    assert result is html_obj
+    assert result.text == "<h1>Hello</h1>"
+
+
+def test_as_html_with_repr_html() -> None:
+    """Test as_html with objects that have _repr_html_ method."""
+    register_formatters()
+
+    class CustomHTML:
+        def _repr_html_(self):
+            return "<div>Custom HTML content</div>"
+
+    obj = CustomHTML()
+    result = as_html(obj)
+    assert result.text == "<div>Custom HTML content</div>"
+
+
+def test_as_html_with_repr_markdown() -> None:
+    """Test as_html with objects that have _repr_markdown_ method."""
+    register_formatters()
+
+    class CustomMarkdown:
+        def _repr_markdown_(self):
+            return "# Markdown Title"
+
+    obj = CustomMarkdown()
+    result = as_html(obj)
+    assert (
+        '<span class="markdown prose dark:prose-invert contents">'
+        in result.text
+    )
+    assert '<h1 id="markdown-title">Markdown Title</h1>' in result.text
+
+
+def test_as_html_with_repr_json() -> None:
+    """Test as_html with objects that have _repr_json_ method."""
+    register_formatters()
+
+    class CustomJSON:
+        def _repr_json_(self):
+            import json
+
+            return json.dumps({"message": "Hello, World!", "count": 42})
+
+    obj = CustomJSON()
+    result = as_html(obj)
+    assert "<marimo-json" in result.text
+
+
+def test_as_html_with_repr_svg() -> None:
+    """Test as_html with objects that have _repr_svg_ method."""
+    register_formatters()
+
+    class CustomSVG:
+        def _repr_svg_(self):
+            return '<svg width="100" height="100"><circle cx="50" cy="50" r="40"/></svg>'
+
+    obj = CustomSVG()
+    result = as_html(obj)
+    assert (
+        result.text
+        == '<svg width="100" height="100"><circle cx="50" cy="50" r="40"/></svg>'
+    )
+
+
+def test_as_html_with_repr_png() -> None:
+    """Test as_html with objects that have _repr_png_ method."""
+    register_formatters()
+
+    class CustomPNG:
+        def _repr_png_(self):
+            return (
+                "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABaElEQVR42mNk"
+            )
+
+    obj = CustomPNG()
+    result = as_html(obj)
+    assert (
+        '<img src="iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABaElEQVR42mNk" alt="" />'
+        in result.text
+    )
+
+
+def test_as_html_with_repr_jpeg() -> None:
+    """Test as_html with objects that have _repr_jpeg_ method."""
+    register_formatters()
+
+    class CustomJPEG:
+        def _repr_jpeg_(self):
+            return (
+                "/9j/4AAQSkZJRgABAQEAYABgAAD/4QBoRXhpZgAATU0AKgAAAAgAA1IBAAAB"
+            )
+
+    obj = CustomJPEG()
+    result = as_html(obj)
+    assert (
+        '<img src="/9j/4AAQSkZJRgABAQEAYABgAAD/4QBoRXhpZgAATU0AKgAAAAgAA1IBAAAB" alt="" />'
+        in result.text
+    )
+
+
+def test_as_html_with_plain_wrapper() -> None:
+    """Test as_html with Plain wrapper to bypass opinionated formatting."""
+    register_formatters()
+
+    # Test with a list that would normally get JSON formatting
+    plain_list = Plain([1, 2, 3])
+    result = as_html(plain_list)
+    assert (
+        result.text
+        == "<marimo-json-output data-json-data='[1,2,3]' data-value-types='&quot;python&quot;'></marimo-json-output>"
+    )
+
+    # Test with a dict that would normally get marimo-json formatting
+    plain_dict = Plain({"key": "value"})
+    result = as_html(plain_dict)
+    assert (
+        result.text
+        == "<marimo-json-output data-json-data='{&quot;key&quot;:&quot;value&quot;}' data-value-types='&quot;python&quot;'></marimo-json-output>"
+    )
+
+
+def test_as_html_with_no_formatter() -> None:
+    """Test as_html with objects that have no registered formatter."""
+    register_formatters()
+
+    class NoFormatter:
+        def __str__(self):
+            return "Custom string representation"
+
+    obj = NoFormatter()
+    result = as_html(obj)
+    assert result.text == "<span>Custom string representation</span>"
+
+
+def test_as_html_with_broken_formatter() -> None:
+    """Test as_html behavior when formatter raises an exception."""
+    register_formatters()
+
+    class BrokenFormatter:
+        def _repr_html_(self):
+            raise ValueError("Formatter is broken")
+
+        def __str__(self):
+            return "fallback string"
+
+    obj = BrokenFormatter()
+    # Should fall back gracefully
+    with pytest.raises(ValueError):
+        as_html(obj)
+
+
+@pytest.mark.skipif(not HAS_DEPS, reason="optional dependencies not installed")
+def test_as_html_with_dataframes() -> None:
+    """Test as_html with pandas and polars DataFrames."""
+    register_formatters()
+
+    import pandas as pd
+    import polars as pl
+
+    # Pandas DataFrame
+    pd_df = pd.DataFrame({"A": [1, 2, 3], "B": ["x", "y", "z"]})
+    result = as_html(pd_df)
+    assert "<marimo-table" in result.text
+
+    # Polars DataFrame
+    pl_df = pl.DataFrame({"A": [1, 2, 3], "B": ["x", "y", "z"]})
+    result = as_html(pl_df)
+    assert "<marimo-table" in result.text
+
+    # Polars LazyFrame
+    pl_ldf = pl_df.lazy()
+    result = as_html(pl_ldf)
+    assert "<marimo-mermaid" in result.text
+
+
+def test_as_html_with_display_protocol() -> None:
+    """Test as_html with objects implementing _display_ protocol."""
+    register_formatters()
+
+    class DisplayProtocol:
+        def _display_(self):
+            return "display protocol content"
+
+        def _repr_html_(self):
+            return "<h1>Should not be used</h1>"
+
+    obj = DisplayProtocol()
+    result = as_html(obj)
+    assert result.text == "<span>display protocol content</span>"

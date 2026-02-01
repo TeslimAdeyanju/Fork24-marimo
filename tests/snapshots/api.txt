@@ -1,4 +1,5 @@
 App
+AppMeta
 Cell
 Html
 MarimoIslandGenerator
@@ -35,6 +36,7 @@ icon
 iframe
 image
 image_compare
+inspect
 islands
   MarimoIslandGenerator
   MarimoIslandStub
@@ -50,6 +52,7 @@ mpl
 nav_menu
 notebook_dir
 notebook_location
+outline
 output
   append
   clear

@@ -32,14 +32,18 @@ exports[`renderZodSchema > should render a form aggregate 1`] = `
             aria-controls="radix-«r25»"
             aria-expanded="false"
             aria-haspopup="dialog"
-            class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+            class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
             data-state="closed"
             type="button"
           >
-            Select columns 
+            <span
+              class="truncate flex-1 min-w-0"
+            >
+              Select columns
+            </span>
             <svg
               aria-hidden="true"
-              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
               fill="none"
               height="24"
               stroke="currentColor"
@@ -83,14 +87,18 @@ exports[`renderZodSchema > should render a form aggregate 1`] = `
             aria-controls="radix-«r27»"
             aria-expanded="false"
             aria-haspopup="dialog"
-            class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+            class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
             data-state="closed"
             type="button"
           >
-            Select aggregations 
+            <span
+              class="truncate flex-1 min-w-0"
+            >
+              Select aggregations
+            </span>
             <svg
               aria-hidden="true"
-              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
               fill="none"
               height="24"
               stroke="currentColor"
@@ -145,7 +153,7 @@ exports[`renderZodSchema > should render a form column_conversion 1`] = `
             aria-autocomplete="none"
             aria-controls="radix-«re»"
             aria-expanded="false"
-            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
             data-placeholder=""
             data-state="closed"
             dir="ltr"
@@ -194,7 +202,7 @@ exports[`renderZodSchema > should render a form column_conversion 1`] = `
           aria-autocomplete="none"
           aria-controls="radix-«rg»"
           aria-expanded="false"
-          class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+          class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
           data-placeholder=""
           data-state="closed"
           dir="ltr"
@@ -254,7 +262,7 @@ exports[`renderZodSchema > should render a form column_conversion 1`] = `
           >
             <button
               aria-checked="false"
-              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xsSolid rounded-full border border-input text-primary ring-offset-background focus:outline-none focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
+              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xs-solid rounded-full border border-input text-primary ring-offset-background focus:outline-hidden focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
               data-radix-collection-item=""
               data-state="unchecked"
               id="errors-ignore"
@@ -275,7 +283,7 @@ exports[`renderZodSchema > should render a form column_conversion 1`] = `
           >
             <button
               aria-checked="false"
-              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xsSolid rounded-full border border-input text-primary ring-offset-background focus:outline-none focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
+              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xs-solid rounded-full border border-input text-primary ring-offset-background focus:outline-hidden focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
               data-radix-collection-item=""
               data-state="unchecked"
               id="errors-raise"
@@ -327,7 +335,7 @@ exports[`renderZodSchema > should render a form expand_dict 1`] = `
             aria-autocomplete="none"
             aria-controls="radix-«r2p»"
             aria-expanded="false"
-            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
             data-placeholder=""
             data-state="closed"
             dir="ltr"
@@ -396,14 +404,18 @@ exports[`renderZodSchema > should render a form explode_columns 1`] = `
             aria-controls="radix-«r2n»"
             aria-expanded="false"
             aria-haspopup="dialog"
-            class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+            class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
             data-state="closed"
             type="button"
           >
-            Select columns 
+            <span
+              class="truncate flex-1 min-w-0"
+            >
+              Select columns
+            </span>
             <svg
               aria-hidden="true"
-              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
               fill="none"
               height="24"
               stroke="currentColor"
@@ -461,7 +473,7 @@ exports[`renderZodSchema > should render a form filter_rows 1`] = `
           >
             <button
               aria-checked="false"
-              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xsSolid rounded-full border border-input text-primary ring-offset-background focus:outline-none focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
+              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xs-solid rounded-full border border-input text-primary ring-offset-background focus:outline-hidden focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
               data-radix-collection-item=""
               data-state="unchecked"
               id="operation-keep_rows"
@@ -482,7 +494,7 @@ exports[`renderZodSchema > should render a form filter_rows 1`] = `
           >
             <button
               aria-checked="false"
-              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xsSolid rounded-full border border-input text-primary ring-offset-background focus:outline-none focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
+              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xs-solid rounded-full border border-input text-primary ring-offset-background focus:outline-hidden focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
               data-radix-collection-item=""
               data-state="unchecked"
               id="operation-remove_rows"
@@ -509,7 +521,9 @@ exports[`renderZodSchema > should render a form filter_rows 1`] = `
       >
         <label
           class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-        />
+        >
+          Value
+        </label>
         <div
           class="flex flex-col gap-2 min-w-[220px]"
         >
@@ -522,7 +536,7 @@ exports[`renderZodSchema > should render a form filter_rows 1`] = `
           </div>
           <div>
             <button
-              class="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background opacity-80 hover:opacity-100 active:opacity-100 h-7 px-2 rounded-md text-xs hover:text-accent-foreground"
+              class="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center font-medium focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background opacity-80 hover:opacity-100 active:opacity-100 h-7 px-2 rounded-md text-xs hover:text-accent-foreground"
               data-testid="marimo-plugin-data-frames-add-array-item"
             >
               <svg
@@ -587,14 +601,18 @@ exports[`renderZodSchema > should render a form group_by 1`] = `
             aria-controls="radix-«r1p»"
             aria-expanded="false"
             aria-haspopup="dialog"
-            class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+            class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
             data-state="closed"
             type="button"
           >
-            Select columns 
+            <span
+              class="truncate flex-1 min-w-0"
+            >
+              Select columns
+            </span>
             <svg
               aria-hidden="true"
-              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
               fill="none"
               height="24"
               stroke="currentColor"
@@ -632,7 +650,7 @@ exports[`renderZodSchema > should render a form group_by 1`] = `
           aria-autocomplete="none"
           aria-controls="radix-«r1r»"
           aria-expanded="false"
-          class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+          class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
           data-placeholder=""
           data-state="closed"
           dir="ltr"
@@ -683,7 +701,7 @@ exports[`renderZodSchema > should render a form group_by 1`] = `
             aria-checked="false"
             aria-describedby="«r1s»-form-item-description"
             aria-invalid="false"
-            class="flex items-center justify-center peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
+            class="flex items-center justify-center peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
             data-state="unchecked"
             data-testid="marimo-plugin-data-frames-boolean-checkbox"
             id="«r1s»-form-item"
@@ -727,7 +745,7 @@ exports[`renderZodSchema > should render a form rename_column 1`] = `
             aria-autocomplete="none"
             aria-controls="radix-«r6»"
             aria-expanded="false"
-            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
             data-placeholder=""
             data-state="closed"
             dir="ltr"
@@ -772,7 +790,7 @@ exports[`renderZodSchema > should render a form rename_column 1`] = `
           <input
             aria-describedby="«r7»-form-item-description"
             aria-invalid="false"
-            class="shadow-xsSolid hover:shadow-smSolid disabled:shadow-xsSolid focus-visible:shadow-mdSolid flex h-6 w-full rounded-sm border border-input bg-background px-1.5 py-1 text-sm font-code ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50 my-0"
+            class="shadow-xs-solid hover:shadow-sm-solid disabled:shadow-xs-solid focus-visible:shadow-md-solid flex h-6 w-full rounded-sm border border-input bg-background px-1.5 py-1 text-sm font-code ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50 my-0"
             id="«r7»-form-item"
             name="new_column_id"
           />
@@ -810,14 +828,14 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
           data-rac=""
         >
           <div
-            class="shadow-xsSolid hover:shadow-smSolid hover:focus-within:shadow-mdSolid flex overflow-hidden rounded-sm border border-input bg-background text-sm font-code ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-xsSolid focus-within:shadow-mdSolid focus-within:outline-none focus-within:ring-1 focus-within:ring-ring focus-within:border-primary h-6 w-full my-0"
+            class="shadow-xs-solid hover:shadow-sm-solid hover:focus-within:shadow-md-solid flex overflow-hidden rounded-sm border border-input bg-background text-sm font-code ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-xs-solid focus-within:shadow-md-solid focus-within:outline-hidden focus-within:ring-1 focus-within:ring-ring focus-within:border-primary h-6 w-full my-0"
           >
             <input
               aria-describedby="«r28»-form-item-description"
               aria-roledescription="Number field"
               autocomplete="off"
               autocorrect="off"
-              class="flex-1 w-full placeholder:text-muted-foreground outline-none disabled:cursor-not-allowed disabled:opacity-50 px-1.5"
+              class="flex-1 w-full placeholder:text-muted-foreground outline-hidden disabled:cursor-not-allowed disabled:opacity-50 px-1.5"
               data-rac=""
               id="«r28»-form-item"
               inputmode="numeric"
@@ -833,7 +851,7 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
               <button
                 aria-controls="«r28»-form-item"
                 aria-label="Increase"
-                class="cursor-default text-muted-foreground pressed:bg-muted-foreground group-disabled:text-disabled-foreground outline-none focus-visible:text-primary disabled:cursor-not-allowed disabled:opacity-50 hover:text-primary hover:bg-muted px-0.5"
+                class="cursor-default text-muted-foreground pressed:bg-muted-foreground group-disabled:text-disabled-foreground outline-hidden focus-visible:text-primary disabled:cursor-not-allowed disabled:opacity-50 hover:text-primary hover:bg-muted px-0.5"
                 data-rac=""
                 data-react-aria-pressable="true"
                 id="react-aria-«r2f»"
@@ -843,7 +861,7 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
               >
                 <svg
                   aria-hidden="true"
-                  class="lucide lucide-chevron-up w-3 h-3 -mb-[1px]"
+                  class="lucide lucide-chevron-up w-3 h-3 -mb-px"
                   fill="none"
                   height="24"
                   stroke="currentColor"
@@ -860,12 +878,12 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
                 </svg>
               </button>
               <div
-                class="h-[1px] flex-shrink-0 divider bg-border z-10"
+                class="h-px shrink-0 divider bg-border z-10"
               />
               <button
                 aria-controls="«r28»-form-item"
                 aria-label="Decrease"
-                class="cursor-default text-muted-foreground pressed:bg-muted-foreground group-disabled:text-disabled-foreground outline-none focus-visible:text-primary disabled:cursor-not-allowed disabled:opacity-50 hover:text-primary hover:bg-muted px-0.5"
+                class="cursor-default text-muted-foreground pressed:bg-muted-foreground group-disabled:text-disabled-foreground outline-hidden focus-visible:text-primary disabled:cursor-not-allowed disabled:opacity-50 hover:text-primary hover:bg-muted px-0.5"
                 data-rac=""
                 data-react-aria-pressable="true"
                 id="react-aria-«r2g»"
@@ -875,7 +893,7 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
               >
                 <svg
                   aria-hidden="true"
-                  class="lucide lucide-chevron-down w-3 h-3 -mt-[1px]"
+                  class="lucide lucide-chevron-down w-3 h-3 -mt-px"
                   fill="none"
                   height="24"
                   stroke="currentColor"
@@ -905,7 +923,7 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
       class="flex flex-row align-start"
     >
       <button
-        class="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-input shadow-xs active:shadow-none h-7 px-2 rounded-md text-xs"
+        class="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center font-medium focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-input shadow-xs active:shadow-none h-7 px-2 rounded-md text-xs"
         data-testid="marimo-plugin-data-frames-random-number-button"
       >
         <svg
@@ -956,7 +974,7 @@ exports[`renderZodSchema > should render a form sample_rows 1`] = `
             aria-checked="false"
             aria-describedby="«r2l»-form-item-description"
             aria-invalid="false"
-            class="flex items-center justify-center peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
+            class="flex items-center justify-center peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
             data-state="unchecked"
             data-testid="marimo-plugin-data-frames-boolean-checkbox"
             id="«r2l»-form-item"
@@ -1003,14 +1021,18 @@ exports[`renderZodSchema > should render a form select_columns 1`] = `
             aria-controls="radix-«r4»"
             aria-expanded="false"
             aria-haspopup="dialog"
-            class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+            class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
             data-state="closed"
             type="button"
           >
-            Select columns 
+            <span
+              class="truncate flex-1 min-w-0"
+            >
+              Select columns
+            </span>
             <svg
               aria-hidden="true"
-              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
               fill="none"
               height="24"
               stroke="currentColor"
@@ -1050,7 +1072,7 @@ exports[`renderZodSchema > should render a form shuffle_rows 1`] = `
       class="flex flex-row align-start"
     >
       <button
-        class="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-input shadow-xs active:shadow-none h-7 px-2 rounded-md text-xs"
+        class="disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center font-medium focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-input shadow-xs active:shadow-none h-7 px-2 rounded-md text-xs"
         data-testid="marimo-plugin-data-frames-random-number-button"
       >
         <svg
@@ -1115,7 +1137,7 @@ exports[`renderZodSchema > should render a form sort_column 1`] = `
             aria-autocomplete="none"
             aria-controls="radix-«r1e»"
             aria-expanded="false"
-            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+            class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
             data-placeholder=""
             data-state="closed"
             dir="ltr"
@@ -1167,7 +1189,7 @@ exports[`renderZodSchema > should render a form sort_column 1`] = `
             aria-checked="false"
             aria-describedby="«r1f»-form-item-description"
             aria-invalid="false"
-            class="flex items-center justify-center peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
+            class="flex items-center justify-center peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
             data-state="unchecked"
             data-testid="marimo-plugin-data-frames-boolean-checkbox"
             id="«r1f»-form-item"
@@ -1206,7 +1228,7 @@ exports[`renderZodSchema > should render a form sort_column 1`] = `
           >
             <button
               aria-checked="false"
-              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xsSolid rounded-full border border-input text-primary ring-offset-background focus:outline-none focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
+              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xs-solid rounded-full border border-input text-primary ring-offset-background focus:outline-hidden focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
               data-radix-collection-item=""
               data-state="unchecked"
               id="na_position-first"
@@ -1227,7 +1249,7 @@ exports[`renderZodSchema > should render a form sort_column 1`] = `
           >
             <button
               aria-checked="false"
-              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xsSolid rounded-full border border-input text-primary ring-offset-background focus:outline-none focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
+              class="h-[16px] w-[16px] transition-shadow data-[state=unchecked]:shadow-xs-solid rounded-full border border-input text-primary ring-offset-background focus:outline-hidden focus:shadow-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary data-[state=checked]:shadow-none"
               data-radix-collection-item=""
               data-state="unchecked"
               id="na_position-last"
@@ -1282,14 +1304,18 @@ exports[`renderZodSchema > should render a form unique 1`] = `
             aria-controls="radix-«r30»"
             aria-expanded="false"
             aria-haspopup="dialog"
-            class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+            class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
             data-state="closed"
             type="button"
           >
-            Select columns 
+            <span
+              class="truncate flex-1 min-w-0"
+            >
+              Select columns
+            </span>
             <svg
               aria-hidden="true"
-              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+              class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
               fill="none"
               height="24"
               stroke="currentColor"
@@ -1327,7 +1353,7 @@ exports[`renderZodSchema > should render a form unique 1`] = `
           aria-autocomplete="none"
           aria-controls="radix-«r32»"
           aria-expanded="false"
-          class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+          class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
           data-placeholder=""
           data-state="closed"
           dir="ltr"
@@ -1381,7 +1407,7 @@ exports[`renders custom forms column_id 1`] = `
         aria-autocomplete="none"
         aria-controls="radix-«r39»"
         aria-expanded="false"
-        class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+        class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
         data-placeholder=""
         data-state="closed"
         dir="ltr"
@@ -1437,14 +1463,18 @@ exports[`renders custom forms column_id_array 1`] = `
         aria-controls="radix-«r3g»"
         aria-expanded="false"
         aria-haspopup="dialog"
-        class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+        class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
         data-state="closed"
         type="button"
       >
-        Select columns 
+        <span
+          class="truncate flex-1 min-w-0"
+        >
+          Select columns
+        </span>
         <svg
           aria-hidden="true"
-          class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+          class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
           fill="none"
           height="24"
           stroke="currentColor"
@@ -1483,14 +1513,18 @@ exports[`renders custom forms column_id_dot_array 1`] = `
         aria-controls="radix-«r3i»"
         aria-expanded="false"
         aria-haspopup="dialog"
-        class="flex h-6 w-fit mb-1 shadow-xsSolid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-smSolid focus:outline-none focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-mdSolid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
+        class="flex h-6 w-fit mb-1 shadow-xs-solid items-center justify-between rounded-sm border border-input bg-transparent px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground hover:shadow-sm-solid focus:outline-hidden focus:ring-1 focus:ring-ring focus:border-primary focus:shadow-md-solid disabled:cursor-not-allowed disabled:opacity-50 min-w-[180px]"
         data-state="closed"
         type="button"
       >
-        -- 
+        <span
+          class="truncate flex-1 min-w-0"
+        >
+          --
+        </span>
         <svg
           aria-hidden="true"
-          class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50"
+          class="lucide lucide-chevron-down ml-3 w-4 h-4 opacity-50 shrink-0"
           fill="none"
           height="24"
           stroke="currentColor"
@@ -1532,7 +1566,7 @@ exports[`renders custom forms column_id_optional 1`] = `
         aria-autocomplete="none"
         aria-controls="radix-«r3k»"
         aria-expanded="false"
-        class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xsSolid border border-input hover:shadow-smSolid focus:border-primary focus:shadow-mdSolid disabled:hover:shadow-xsSolid mb-0 min-w-[180px]"
+        class="flex h-6 w-fit items-center justify-between rounded-sm bg-background px-2 text-sm font-prose ring-offset-background placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer shadow-xs-solid border border-input hover:shadow-sm-solid focus:border-primary focus:shadow-md-solid disabled:hover:shadow-xs-solid mb-0 min-w-[180px]"
         data-placeholder=""
         data-state="closed"
         dir="ltr"

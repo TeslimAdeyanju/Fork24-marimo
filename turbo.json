@@ -2,15 +2,22 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": {
-      "outputs": ["dist/**"]
+      "dependsOn": ["^build", "codegen"],
+      "outputs": ["dist/**"],
+      "env": ["NODE_ENV", "VITE_MARIMO_VERSION", "VITE_MARIMO_ISLANDS"]
     },
-    "typecheck": {},
-    "test": {},
+    "typecheck": {
+      "dependsOn": ["codegen", "^codegen"]
+    },
+    "test": {
+      "dependsOn": ["build"]
+    },
     "codegen": {
       "cache": false
     },
     "lint": {},
     "dev": {
+      "dependsOn": ["^build", "codegen"],
       "cache": false,
       "persistent": true
     }

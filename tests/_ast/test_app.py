@@ -1,30 +1,43 @@
 # Copyright 2024 Marimo. All rights reserved.
 
 from __future__ import annotations
+import os
 import pathlib
 import subprocess
+import sys
 import textwrap
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
+import click
 import pytest
 
-from marimo._ast.app_config import _AppConfig
 from marimo._ast.app import (
     App,
+    AppEmbedResult,
     AppKernelRunnerRegistry,
     InternalApp,
 )
+from marimo._ast.app_config import _AppConfig
 from marimo._ast.errors import (
     CycleError,
-    DeleteNonlocalError,
+    IncompleteRefsError,
     MultipleDefinitionError,
     SetupRootError,
     UnparsableError,
 )
+from marimo._ast.load import load_app
+from marimo._convert.converters import MarimoConvert
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._plugins.stateless.flex import vstack
 from marimo._runtime.context.types import get_context
 from marimo._runtime.requests import SetUIElementValueRequest
+from marimo._schemas.serialization import (
+    AppInstantiation,
+    CellDef,
+    NotebookSerializationV1,
+)
+from marimo._types.ids import CellId_t
 from tests.conftest import ExecReqProvider
 
 if TYPE_CHECKING:
@@ -76,6 +89,111 @@ class TestApp:
         assert defs["x"] == 0
         assert (defs["y"], defs["z"]) == (1, 2)
         assert defs["a"] == 2
+
+    @staticmethod
+    def test_run_with_refs() -> None:
+        """Test that app.run() can override variables with provided defs."""
+        app = App()
+
+        @app.cell
+        def config() -> tuple[int, float]:
+            batch_size = 32
+            learning_rate = 0.01
+            return batch_size, learning_rate
+
+        @app.cell
+        def process_data(batch_size: int, learning_rate: float) -> tuple[float]:
+            result = batch_size * learning_rate
+            return (result,)
+
+        @app.cell
+        def other_cell() -> tuple[str]:
+            message = "independent"
+            return (message,)
+
+        # Test 1: Run with default values
+        outputs, defs = app.run()
+        assert defs["batch_size"] == 32
+        assert defs["learning_rate"] == 0.01
+        assert defs["result"] == 32 * 0.01
+        assert defs["message"] == "independent"
+
+        # Test 2: Run with overridden values
+        outputs, defs = app.run(defs={"batch_size": 64, "learning_rate": 0.001})
+        assert defs["batch_size"] == 64
+        assert defs["learning_rate"] == 0.001
+        assert defs["result"] == 64 * 0.001
+        assert defs["message"] == "independent"  # unaffected cell still runs
+
+        # Test 3: Partial override - this should fail with IncompleteRefsError
+        # because we're only providing batch_size but the config cell defines both
+        # batch_size and learning_rate
+        with pytest.raises(IncompleteRefsError) as exc_info:
+            app.run(defs={"batch_size": 128})
+        assert "learning_rate" in str(exc_info.value)
+        assert "Missing: ['learning_rate']" in str(exc_info.value)
+        assert "Provided refs: ['batch_size']" in str(exc_info.value)
+
+    @staticmethod
+    def test_run_with_refs_multiple_cells() -> None:
+        """Test defs override with multiple cells that define different variables."""
+        app = App()
+
+        @app.cell
+        def cell_a() -> tuple[int]:
+            x = 10
+            return (x,)
+
+        @app.cell
+        def cell_b() -> tuple[int]:
+            y = 20
+            return (y,)
+
+        @app.cell
+        def cell_c(x: int, y: int) -> tuple[int]:
+            z = x + y
+            return (z,)
+
+        # Test: Override both x and y - cells a and b should be pruned
+        outputs, defs = app.run(defs={"x": 100, "y": 200})
+        assert defs["x"] == 100
+        assert defs["y"] == 200
+        assert defs["z"] == 300
+
+        # Test: Override only x - cell a is pruned, cell b still runs
+        outputs, defs = app.run(defs={"x": 50})
+        assert defs["x"] == 50
+        assert defs["y"] == 20  # cell_b still ran
+        assert defs["z"] == 70
+
+    @staticmethod
+    def test_run_with_refs_setup_cell_protection() -> None:
+        """Test that overriding setup cell definitions raises IncompleteRefsError."""
+        app = App()
+
+        with app.setup:
+            import os
+            setup_var = "from_setup"
+
+        @app.cell
+        def use_setup(setup_var: str) -> tuple[str]:
+            result = f"Used {setup_var}"
+            return (result,)
+
+        # Test: Can still override non-setup variables
+        @app.cell
+        def normal_cell() -> tuple[int]:
+            normal_var = 42
+            return (normal_var,)
+
+        # Test: Trying to override setup cell variables should fail
+        with pytest.raises(TypeError) as exc_info:
+            app.run(defs={"setup_var": "overridden"})
+        assert "override" in str(exc_info.value)
+
+        outputs, defs = app.run(defs={"normal_var": 100})
+        assert defs["normal_var"] == 100
+        assert "setup_var" in defs  # setup still ran
 
     @staticmethod
     def test_setup() -> None:
@@ -185,7 +303,7 @@ class TestApp:
             app.run()
 
     @staticmethod
-    def test_delete_nonlocal_missing_args_rets() -> None:
+    def test_delete_nonlocal_ok() -> None:
         app = App()
 
         @app.cell
@@ -196,8 +314,8 @@ class TestApp:
         def two() -> None:
             del x  # noqa: F841, F821
 
-        with pytest.raises(DeleteNonlocalError):
-            app.run()
+        # smoke test, no error raised
+        app.run()
 
     @staticmethod
     def test_unparsable_cell() -> None:
@@ -850,7 +968,7 @@ def test_cli_args(tmp_path: pathlib.Path) -> None:
     """
     py_file.write_text(textwrap.dedent(content))
     p = subprocess.run(
-        ["python", str(py_file), "--foo", "value1", "--bar", "value2"],
+        [sys.executable, str(py_file), "--foo", "value1", "--bar", "value2"],
         stdout=subprocess.PIPE,
     )
     assert p.returncode == 0
@@ -1041,6 +1159,100 @@ class TestAppComposition:
         _, defs = app.run()
         assert defs["x"] == 0
         assert "app" not in defs
+
+    @staticmethod
+    def test_setup_hide_code() -> None:
+        setup_cell_id = CellId_t("setup")
+
+        # Test property access (default behavior, hide_code=False)
+        app1 = App()
+        with app1.setup:
+            x = 1
+
+        setup_cell = app1._cell_manager._cell_data.get(setup_cell_id)
+        assert setup_cell is not None
+        assert setup_cell.config.hide_code is False
+
+        # Test method call with default (hide_code=False)
+        app2 = App()
+        with app2.setup():
+            x2 = 1
+
+        setup_cell = app2._cell_manager._cell_data.get(setup_cell_id)
+        assert setup_cell is not None
+        assert setup_cell.config.hide_code is False
+
+        # Test hide_code=True
+        app3 = App()
+        with app3.setup(hide_code=True):
+            y = 2
+
+        setup_cell = app3._cell_manager._cell_data.get(setup_cell_id)
+        assert setup_cell is not None
+        assert setup_cell.config.hide_code is True
+
+        # Test explicit hide_code=False
+        app4 = App()
+        with app4.setup(hide_code=False):
+            z = 3
+
+        setup_cell = app4._cell_manager._cell_data.get(setup_cell_id)
+        assert setup_cell is not None
+        assert setup_cell.config.hide_code is False
+
+
+    @staticmethod
+    async def test_app_embed_preserves_file_path(
+        app: App
+    ) -> None:
+        with app.setup:
+            from tests._ast.app_data import notebook_filename
+
+        @app.cell
+        async def _():
+            app = await notebook_filename.app.embed()
+            cloned = await notebook_filename.app.clone().embed()
+            filename = "notebook_filename.py"
+            directory = "app_data"
+            return (app, cloned, filename, directory)
+
+        @app.cell
+        def _(app: AppEmbedResult, filename: str, directory: str) -> None:
+            assert app.defs.get("this_is_foo_file").endswith(filename)
+            assert app.defs.get("this_is_foo_path").stem == directory
+
+        @app.cell
+        def _(cloned: AppEmbedResult, filename: str, directory: str) -> None:
+            assert cloned.defs.get("this_is_foo_file").endswith(filename)
+            assert cloned.defs.get("this_is_foo_path").stem == directory
+
+
+    @staticmethod
+    async def test_app_embed_in_kernel(
+        k: Kernel, exec_req: ExecReqProvider
+    ) -> None:
+        await k.run(
+            [
+                exec_req.get(
+                    """
+                    from tests._ast.app_data import notebook_filename
+                    """
+                ),
+                exec_req.get(
+                    """
+                    app = await notebook_filename.app.embed()
+                    cloned = await notebook_filename.app.clone().embed()
+                    """
+                ),
+            ]
+        )
+        assert not k.errors
+        filename = "notebook_filename.py"
+        directory = "app_data"
+        assert k.globals["app"].defs.get("this_is_foo_file").endswith(filename)
+        assert k.globals["cloned"].defs.get("this_is_foo_file").endswith(filename)
+        assert k.globals["app"].defs.get("this_is_foo_path").stem == directory
+        assert k.globals["cloned"].defs.get("this_is_foo_path").stem == directory
 
 
 class TestAppKernelRunnerRegistry:

@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import ast
-import itertools
 import sys
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Callable, Literal, Optional, Union
 from uuid import uuid4
 
@@ -14,16 +14,22 @@ from marimo import _loggers
 from marimo._ast.errors import ImportStarError
 from marimo._ast.sql_visitor import (
     SQLDefs,
+    SQLKind,
+    SQLRef,
     find_sql_defs,
     find_sql_refs,
     normalize_sql_f_string,
 )
 from marimo._ast.variables import is_local
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._sql.error_utils import log_sql_error
+from marimo._utils.strings import standardize_annotation_quotes
 
 LOGGER = _loggers.marimo_logger()
 
+
 Name = str
+
 
 Language = Literal["python", "sql"]
 
@@ -56,15 +62,14 @@ class AnnotationData:
 @dataclass
 class VariableData:
     # "table", "view", "schema", and "catalog" are SQL variables, not Python.
-    kind: Literal[
-        "function",
-        "class",
-        "import",
-        "variable",
-        "table",
-        "view",
-        "schema",
-        "catalog",
+    kind: Union[
+        Literal[
+            "function",
+            "class",
+            "import",
+            "variable",
+        ],
+        SQLKind,
     ] = "variable"
 
     # If kind == function or class, it may be dependent on externally defined
@@ -87,6 +92,9 @@ class VariableData:
 
     # For kind == import
     import_data: Optional[ImportData] = None
+
+    # In the sql case, the name may be qualified
+    qualified_name: Optional[str] = None
 
     @property
     def language(self) -> Language:
@@ -139,6 +147,8 @@ class RefData:
     block: Block
     # Ancestors of the block in which this ref was used
     parent_blocks: list[Block]
+    # Only applicable for SQL cells
+    sql_ref: Optional[SQLRef] = None
 
 
 NamedNode = Union[
@@ -155,6 +165,13 @@ NamedNode = Union[
     "ast.ParamSpec",  # type: ignore
     "ast.TypeVarTuple",  # type: ignore
 ]
+
+
+# Cache SQL refs to avoid parsing the same SQL statement multiple times
+# since this can be called for each SQL cell on save.
+@lru_cache(maxsize=200)
+def find_sql_refs_cached(sql_statement: str) -> set[SQLRef]:
+    return find_sql_refs(sql_statement)
 
 
 class ScopedVisitor(ast.NodeVisitor):
@@ -203,6 +220,17 @@ class ScopedVisitor(ast.NodeVisitor):
         return set(self._refs.keys())
 
     @property
+    def sql_refs(self) -> dict[Name, SQLRef]:
+        """Names and their SQLRefs"""
+        refs = {}
+        for name, ref_data in self._refs.items():
+            # Take the last ref data because it's the most recent ref?
+            sql_ref = ref_data[-1].sql_ref
+            if sql_ref is not None:
+                refs[name] = sql_ref
+        return refs
+
+    @property
     def deleted_refs(self) -> set[Name]:
         """Referenced names that were deleted with `del`."""
 
@@ -239,7 +267,9 @@ class ScopedVisitor(ast.NodeVisitor):
         else:
             return name
 
-    def _get_alias_name(self, node: ast.alias) -> str:
+    def _get_alias_name(
+        self, node: ast.alias, import_node: ast.ImportFrom | None = None
+    ) -> str:
         """Get the string name of an imported alias.
 
         Mangles the "as" name if it's a local variable.
@@ -257,11 +287,15 @@ class ScopedVisitor(ast.NodeVisitor):
             # Don't mangle - user has no control over package name
             basename = node.name.split(".")[0]
             if basename == "*":
-                line = (
-                    f"line {node.lineno}"
+                # Use the ImportFrom node's line number for consistency
+                line_num = (
+                    import_node.lineno
+                    if import_node and hasattr(import_node, "lineno")
+                    else node.lineno
                     if hasattr(node, "lineno")
-                    else "line ..."
+                    else None
                 )
+                line = f"line {line_num}" if line_num else "line ..."
                 raise ImportStarError(
                     f"{line} SyntaxError: Importing symbols with `import *` "
                     "is not allowed in marimo."
@@ -276,7 +310,12 @@ class ScopedVisitor(ast.NodeVisitor):
         return any(block.is_defined(identifier) for block in self.block_stack)
 
     def _add_ref(
-        self, node: NamedNode | None, name: Name, deleted: bool
+        self,
+        node: NamedNode | None,
+        name: Name,
+        *,
+        deleted: bool,
+        sql_ref: Optional[SQLRef] = None,
     ) -> None:
         """Register a referenced name."""
         if name not in self._refs:
@@ -303,6 +342,7 @@ class ScopedVisitor(ast.NodeVisitor):
                     deleted=deleted,
                     parent_blocks=parents,
                     block=current_block,
+                    sql_ref=sql_ref,
                 )
             )
 
@@ -583,7 +623,7 @@ class ScopedVisitor(ast.NodeVisitor):
             first_arg = node.args[0]
             sql: Optional[str] = None
             if isinstance(first_arg, ast.Constant):
-                sql = first_arg.s
+                sql = first_arg.value
             elif isinstance(first_arg, ast.JoinedStr):
                 sql = normalize_sql_f_string(first_arg)
 
@@ -595,6 +635,20 @@ class ScopedVisitor(ast.NodeVisitor):
                 and sql
             ):
                 import duckdb  # type: ignore[import-not-found,import-untyped,unused-ignore] # noqa: E501
+
+                # Import ParseError outside try block so we can except it
+                # Use a Union approach to handle both cases
+                ParseErrorType: type[Exception]
+                if DependencyManager.sqlglot.has():
+                    from sqlglot.errors import ParseError as SQLGLOTParseError
+
+                    ParseErrorType = SQLGLOTParseError
+                else:
+                    # Fallback when sqlglot is not available
+                    ParseErrorType = Exception
+
+                # TODO: Handle other SQL languages
+                # TODO: Get the engine so we can differentiate tables in diff engines
 
                 # Add all tables in the query to the ref scope
                 try:
@@ -616,57 +670,111 @@ class ScopedVisitor(ast.NodeVisitor):
                     # We catch base exceptions because we don't want to
                     # fail due to bugs in duckdb -- users code should
                     # be saveable no matter what
-                    LOGGER.warning("Unexpected duckdb error %s", e)
+                    log_sql_error(
+                        LOGGER.warning,
+                        message=f"Unexpected duckdb error {e}",
+                        exception=e,
+                        node=node,
+                        rule_code="MF005",
+                        sql_content=sql,
+                    )
                     self.generic_visit(node)
                     return node
 
+                # Try to process each statement individually
+                # For some SQL types (e.g., PIVOT with certain clauses),
+                # DuckDB's statement.query may fail, so we fall back to processing the full SQL
+                statement_queries: list[str] = []
+                use_full_sql = False
                 for statement in statements:
-                    tables: set[str] = set()
-                    from_targets: list[str] = []
+                    try:
+                        statement_sql = statement.query
+                        # Skip empty statements
+                        if statement_sql.strip():
+                            statement_queries.append(statement_sql)
+                    except (IndexError, BaseException):
+                        # Fallback to full SQL if we can't extract any individual statement
+                        use_full_sql = True
+                        break
+
+                # If we couldn't extract individual statements, process the full SQL once
+                if use_full_sql or not statement_queries:
+                    statement_queries = [sql]
+
+                # Accumulate defined names across all statements in this SQL block
+                # so that later statements don't create refs to tables defined in earlier statements
+                defined_names: set[str] = set()
+
+                for statement_sql in statement_queries:
                     # Parse the refs and defs of each statement
-                    try:
-                        tables = duckdb.get_table_names(statement.query)
-                    except (duckdb.ProgrammingError, duckdb.IOException):
-                        LOGGER.debug(
-                            "Error parsing SQL statement: %s", statement.query
-                        )
-                    except BaseException as e:
-                        LOGGER.warning("Unexpected duckdb error %s", e)
-                    try:
-                        # TODO(akshayka): more comprehensive parsing
-                        # of the statement -- schemas can show up in
-                        # joins, queries, ...
-                        from_targets = find_sql_refs(statement.query)
-                    except (duckdb.ProgrammingError, duckdb.IOException):
-                        LOGGER.debug(
-                            "Error parsing SQL statement: %s", statement.query
-                        )
-                    except BaseException as e:
-                        LOGGER.warning("Unexpected duckdb error %s", e)
-
-                    for name in itertools.chain(tables, from_targets):
-                        # Name (table, db) may be a URL or something else that
-                        # isn't a Python variable
-                        if name.isidentifier():
-                            self._add_ref(None, name, deleted=False)
-
                     # Add all tables/dbs created in the query to the defs
                     try:
-                        sql_defs = find_sql_defs(sql)
+                        sql_defs = find_sql_defs(statement_sql)
                     except duckdb.ProgrammingError:
                         sql_defs = SQLDefs()
                     except BaseException as e:
-                        LOGGER.warning("Unexpected duckdb error %s", e)
+                        log_sql_error(
+                            LOGGER.warning,
+                            message=f"Unexpected duckdb error {e}",
+                            exception=e,
+                            node=node,
+                            rule_code="MF005",
+                            sql_content=statement_sql,
+                            context="sql_defs_extraction",
+                        )
                         sql_defs = SQLDefs()
 
                     for _table in sql_defs.tables:
-                        self._define(None, _table, VariableData("table"))
+                        self._define(
+                            None,
+                            _table.table,
+                            VariableData(
+                                "table", qualified_name=_table.qualified_name
+                            ),
+                        )
+                        defined_names.add(_table.qualified_name)
                     for _view in sql_defs.views:
-                        self._define(None, _view, VariableData("view"))
+                        self._define(
+                            None,
+                            _view.table,
+                            VariableData(
+                                "view", qualified_name=_view.qualified_name
+                            ),
+                        )
+                        defined_names.add(_view.qualified_name)
                     for _schema in sql_defs.schemas:
                         self._define(None, _schema, VariableData("schema"))
+                        defined_names.add(_schema)
                     for _catalog in sql_defs.catalogs:
                         self._define(None, _catalog, VariableData("catalog"))
+                        defined_names.add(_catalog)
+
+                    sql_refs: set[SQLRef] = set()
+                    try:
+                        # Take results
+                        sql_refs = find_sql_refs_cached(statement_sql)
+                    except (
+                        duckdb.ProgrammingError,
+                        duckdb.IOException,
+                        ParseErrorType,
+                        BaseException,
+                    ) as e:
+                        # Use first_arg (SQL string node) for accurate positioning
+                        log_sql_error(
+                            LOGGER.error,
+                            message=f"Error parsing SQL statement: {e}",
+                            exception=e,
+                            node=first_arg,
+                            rule_code="MF005",
+                            sql_content=statement_sql,
+                        )
+
+                    for ref in sql_refs:
+                        name = ref.qualified_name
+                        # Cells that define the same name aren't cycles, so we skip them
+                        if name in defined_names:
+                            continue
+                        self._add_ref(None, name, deleted=False, sql_ref=ref)
 
         # Visit arguments, keyword args, etc.
         self.generic_visit(node)
@@ -768,11 +876,8 @@ class ScopedVisitor(ast.NodeVisitor):
             annotation = ast.unparse(node.annotation)
             # It's also possible for multiline types/ strings
             annotation = annotation.replace("\n", "").strip()
-            # ast seems to give single quote strings regardless
-            # but ruff asks for double quotes (unless double quotes are
-            # contained).
-            if annotation.startswith("'") and '"' not in annotation[1:-1]:
-                annotation = f'"{annotation[1:-1]}"'
+            # Standardize quotes to use double quotes consistently
+            annotation = standardize_annotation_quotes(annotation)
 
             self.variable_data[name][0].annotation_data = AnnotationData(
                 annotation, annotation_refs
@@ -934,7 +1039,7 @@ class ScopedVisitor(ast.NodeVisitor):
         # we don't recurse into the alias nodes, since we define the
         # aliases here
         for alias_node in node.names:
-            variable_name = self._get_alias_name(alias_node)
+            variable_name = self._get_alias_name(alias_node, import_node=node)
             original_name = alias_node.name
             self._define(
                 None,
@@ -951,52 +1056,49 @@ class ScopedVisitor(ast.NodeVisitor):
             )
         return node
 
-    if sys.version_info >= (3, 10):
-        # Match statements were introduced in Python 3.10
-        #
-        # Top-level match statements are awkward in marimo --- at parse-time,
-        # we have to register all names in every case/pattern as globals (since
-        # we don't know the value of the match subject), even though only a
-        # subset of the names will be bound at runtime. For this reason, in
-        # marimo, match statements should really only be used in local scopes.
-        def visit_MatchAs(self, node: ast.MatchAs) -> ast.MatchAs:
-            if node.name is not None:
-                node.name = self._if_local_then_mangle(node.name)
-                self._define(
-                    node,
-                    node.name,
-                    VariableData(kind="variable"),
-                )
-            if node.pattern is not None:
-                # pattern may contain additional MatchAs statements in it
-                self.visit(node.pattern)
-            return node
+    # Match statements were introduced in Python 3.10
+    #
+    # Top-level match statements are awkward in marimo --- at parse-time,
+    # we have to register all names in every case/pattern as globals (since
+    # we don't know the value of the match subject), even though only a
+    # subset of the names will be bound at runtime. For this reason, in
+    # marimo, match statements should really only be used in local scopes.
+    def visit_MatchAs(self, node: ast.MatchAs) -> ast.MatchAs:
+        if node.name is not None:
+            node.name = self._if_local_then_mangle(node.name)
+            self._define(
+                node,
+                node.name,
+                VariableData(kind="variable"),
+            )
+        if node.pattern is not None:
+            # pattern may contain additional MatchAs statements in it
+            self.visit(node.pattern)
+        return node
 
-        def visit_MatchMapping(
-            self, node: ast.MatchMapping
-        ) -> ast.MatchMapping:
-            if node.rest is not None:
-                node.rest = self._if_local_then_mangle(node.rest)
-                self._define(
-                    node,
-                    node.rest,
-                    VariableData(kind="variable"),
-                )
-            for key in node.keys:
-                self.visit(key)
-            for pattern in node.patterns:
-                self.visit(pattern)
-            return node
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> ast.MatchMapping:
+        if node.rest is not None:
+            node.rest = self._if_local_then_mangle(node.rest)
+            self._define(
+                node,
+                node.rest,
+                VariableData(kind="variable"),
+            )
+        for key in node.keys:
+            self.visit(key)
+        for pattern in node.patterns:
+            self.visit(pattern)
+        return node
 
-        def visit_MatchStar(self, node: ast.MatchStar) -> ast.MatchStar:
-            if node.name is not None:
-                node.name = self._if_local_then_mangle(node.name)
-                self._define(
-                    node,
-                    node.name,
-                    VariableData(kind="variable"),
-                )
-            return node
+    def visit_MatchStar(self, node: ast.MatchStar) -> ast.MatchStar:
+        if node.name is not None:
+            node.name = self._if_local_then_mangle(node.name)
+            self._define(
+                node,
+                node.name,
+                VariableData(kind="variable"),
+            )
+        return node
 
     if sys.version_info >= (3, 12):
 

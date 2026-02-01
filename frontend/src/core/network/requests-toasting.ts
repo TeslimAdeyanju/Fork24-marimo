@@ -35,9 +35,11 @@ export function createErrorToastingRequests(
     previewSQLTable: "Failed to fetch SQL table",
     previewSQLTableList: "Failed to fetch SQL table list",
     previewDataSourceConnection: "Failed to preview data source connection",
+    validateSQL: "Failed to validate SQL",
     openFile: "Failed to open file",
     getUsageStats: "", // No toast
     sendListFiles: "Failed to list files",
+    sendSearchFiles: "Failed to search files",
     sendPdb: "Failed to start debug session",
     sendCreateFileOrFolder: "Failed to create file or folder",
     sendDeleteFileOrFolder: "Failed to delete file or folder",
@@ -62,6 +64,8 @@ export function createErrorToastingRequests(
     listSecretKeys: "Failed to fetch secrets",
     writeSecret: "Failed to write secret",
     invokeAiTool: "Failed to invoke AI tool",
+    clearCache: "Failed to clear cache",
+    getCacheInfo: "", // No toast
   };
 
   const handlers = {} as EditRequests & RunRequests;

@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import abc
 import io
-from typing import Any, Optional
+from typing import NewType, Optional
 
 from marimo._messaging.mimetypes import ConsoleMimeType
 from marimo._types.ids import CellId_t
 
-# The message from the kernel is a tuple of message type
-# and a json representation of the message
-KernelMessage = tuple[str, Any]
+# A KernelMessage is a bytes object that contains a serialized MessageOperation.
+KernelMessage = NewType("KernelMessage", bytes)
 
 
 class Stream(abc.ABC):
@@ -23,7 +22,7 @@ class Stream(abc.ABC):
     cell_id: Optional[CellId_t] = None
 
     @abc.abstractmethod
-    def write(self, op: str, data: dict[Any, Any]) -> None:
+    def write(self, data: KernelMessage) -> None:
         pass
 
     def stop(self) -> None:
@@ -32,10 +31,11 @@ class Stream(abc.ABC):
 
 
 class NoopStream(Stream):
-    def write(self, op: str, data: dict[Any, Any]) -> None:
+    def write(self, data: KernelMessage) -> None:
         pass
 
 
+# These streams are not stoppable by users (we don't implement stop).
 class Stdout(io.TextIOBase):
     name = "stdout"
 
@@ -48,7 +48,7 @@ class Stdout(io.TextIOBase):
     def write(self, __s: str) -> int:
         return self._write_with_mimetype(__s, mimetype="text/plain")
 
-    def stop(self) -> None:
+    def _stop(self) -> None:
         """Tear down resources, if any."""
         pass
 
@@ -65,7 +65,7 @@ class Stderr(io.TextIOBase):
     def write(self, __s: str) -> int:
         return self._write_with_mimetype(__s, mimetype="text/plain")
 
-    def stop(self) -> None:
+    def _stop(self) -> None:
         """Tear down resources, if any."""
         pass
 
@@ -73,6 +73,6 @@ class Stderr(io.TextIOBase):
 class Stdin(io.TextIOBase):
     name = "stdin"
 
-    def stop(self) -> None:
+    def _stop(self) -> None:
         """Tear down resources, if any."""
         pass

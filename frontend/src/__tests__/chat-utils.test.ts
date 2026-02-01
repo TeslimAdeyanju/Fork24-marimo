@@ -1,234 +1,63 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
+import type { UIMessage } from "ai";
 import { describe, expect, it } from "vitest";
-import { addMessageToChat } from "../core/ai/chat-utils";
-import type { ChatState } from "../core/ai/state";
+import { Maps } from "@/utils/maps";
+import { replaceMessagesInChat } from "../core/ai/chat-utils";
+import type { Chat, ChatId, ChatState } from "../core/ai/state";
 
-describe("addMessageToChat", () => {
+const CHAT_1 = "chat-1" as ChatId;
+
+function asMap(list: Iterable<Chat>) {
+  return Maps.keyBy(list, (c) => c.id);
+}
+describe("replaceMessagesInChat", () => {
   const mockChatState: ChatState = {
-    chats: [
+    chats: asMap([
       {
-        id: "chat-1",
+        id: CHAT_1,
         title: "Test Chat 1",
         messages: [
           {
             id: "msg-1",
             role: "user",
-            content: "Hello",
-            timestamp: 1000,
-          },
-          {
-            id: "msg-2",
-            role: "assistant",
-            content: "Hi there!",
-            timestamp: 2000,
+            parts: [{ type: "text", text: "Hello" }],
+            metadata: { timestamp: 1000 },
           },
         ],
         createdAt: 1000,
         updatedAt: 2000,
       },
-      {
-        id: "chat-2",
-        title: "Test Chat 2",
-        messages: [
-          {
-            id: "msg-3",
-            role: "user",
-            content: "How are you?",
-            timestamp: 3000,
-          },
-        ],
-        createdAt: 3000,
-        updatedAt: 3000,
-      },
-    ],
-    activeChatId: "chat-1",
+    ]),
+    activeChatId: CHAT_1,
   };
 
-  it("should add a new message to an existing chat", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      "chat-1",
-      "msg-4",
-      "user",
-      "New message",
-    );
-
-    expect(result.chats).toHaveLength(2);
-    const updatedChat = result.chats.find((chat) => chat.id === "chat-1");
-    expect(updatedChat?.messages).toHaveLength(3);
-    expect(updatedChat?.messages[2]).toEqual({
-      id: "msg-4",
-      role: "user",
-      content: "New message",
-      timestamp: expect.any(Number),
+  it("replaces messages in a chat", () => {
+    const newMessages: UIMessage[] = [
+      {
+        id: "msg-2",
+        role: "assistant",
+        parts: [{ type: "text", text: "Hi there!" }],
+        metadata: { timestamp: 2000 },
+      },
+    ];
+    const result = replaceMessagesInChat({
+      chatState: mockChatState,
+      chatId: CHAT_1,
+      messages: newMessages,
     });
-    expect(updatedChat?.updatedAt).toBeGreaterThan(
-      mockChatState.chats[0].updatedAt,
+    expect(result.chats.get(CHAT_1)?.messages).toEqual(newMessages);
+    expect(result.chats.get(CHAT_1)?.updatedAt).toBeGreaterThan(
+      mockChatState.chats.get(CHAT_1)?.updatedAt ?? 0,
     );
   });
 
-  it("should update an existing message", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      "chat-1",
-      "msg-1",
-      "user",
-      "Updated content",
-    );
-
-    expect(result.chats).toHaveLength(2);
-    const updatedChat = result.chats.find((chat) => chat.id === "chat-1");
-    expect(updatedChat?.messages).toHaveLength(2);
-    expect(updatedChat?.messages[0]).toEqual({
-      id: "msg-1",
-      role: "user",
-      content: "Updated content",
-      timestamp: 1000,
+  it("returns unchanged state if chatId is null", () => {
+    const result = replaceMessagesInChat({
+      chatState: mockChatState,
+      chatId: null,
+      messages: [],
     });
-    expect(updatedChat?.updatedAt).toBeGreaterThan(
-      mockChatState.chats[0].updatedAt,
-    );
-  });
-
-  it("should handle message parts", () => {
-    const parts = [{ type: "text" as const, text: "Part content" }];
-    const result = addMessageToChat(
-      mockChatState,
-      "chat-1",
-      "msg-5",
-      "assistant",
-      "Message with parts",
-      parts,
-    );
-
-    const updatedChat = result.chats.find((chat) => chat.id === "chat-1");
-    expect(updatedChat?.messages[2].parts).toEqual(parts);
-  });
-
-  it("should update message parts", () => {
-    const originalParts = [{ type: "text" as const, text: "Original" }];
-    const updatedParts = [{ type: "text" as const, text: "Updated" }];
-
-    const stateWithParts: ChatState = {
-      ...mockChatState,
-      chats: [
-        {
-          ...mockChatState.chats[0],
-          messages: [
-            {
-              ...mockChatState.chats[0].messages[0],
-              parts: originalParts,
-            },
-            mockChatState.chats[0].messages[1],
-          ],
-        },
-        mockChatState.chats[1],
-      ],
-    };
-
-    const result = addMessageToChat(
-      stateWithParts,
-      "chat-1",
-      "msg-1",
-      "user",
-      "Updated content",
-      updatedParts,
-    );
-
-    const updatedChat = result.chats.find((chat) => chat.id === "chat-1");
-    expect(updatedChat?.messages[0].parts).toEqual(updatedParts);
-  });
-
-  it("should return unchanged state when chatId is null", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      null,
-      "msg-4",
-      "user",
-      "New message",
-    );
-
     expect(result).toEqual(mockChatState);
-  });
-
-  it("should return unchanged state when chatId does not exist", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      "non-existent-chat",
-      "msg-4",
-      "user",
-      "New message",
-    );
-
-    expect(result).toEqual(mockChatState);
-  });
-
-  it("should not modify other chats when updating a specific chat", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      "chat-1",
-      "msg-4",
-      "user",
-      "New message",
-    );
-
-    const unchangedChat = result.chats.find((chat) => chat.id === "chat-2");
-    expect(unchangedChat).toEqual(mockChatState.chats[1]);
-  });
-
-  it("should preserve message order when adding new messages", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      "chat-1",
-      "msg-4",
-      "user",
-      "New message",
-    );
-
-    const updatedChat = result.chats.find((chat) => chat.id === "chat-1");
-    expect(updatedChat?.messages[0].id).toBe("msg-1");
-    expect(updatedChat?.messages[1].id).toBe("msg-2");
-    expect(updatedChat?.messages[2].id).toBe("msg-4");
-  });
-
-  it("should handle empty chat messages array", () => {
-    const emptyChatState: ChatState = {
-      chats: [
-        {
-          id: "empty-chat",
-          title: "Empty Chat",
-          messages: [],
-          createdAt: 1000,
-          updatedAt: 1000,
-        },
-      ],
-      activeChatId: "empty-chat",
-    };
-
-    const result = addMessageToChat(
-      emptyChatState,
-      "empty-chat",
-      "msg-1",
-      "user",
-      "First message",
-    );
-
-    const updatedChat = result.chats.find((chat) => chat.id === "empty-chat");
-    expect(updatedChat?.messages).toHaveLength(1);
-    expect(updatedChat?.messages[0].content).toBe("First message");
-  });
-
-  it("should handle different message roles", () => {
-    const result = addMessageToChat(
-      mockChatState,
-      "chat-1",
-      "msg-4",
-      "assistant",
-      "Assistant response",
-    );
-
-    const updatedChat = result.chats.find((chat) => chat.id === "chat-1");
-    expect(updatedChat?.messages[2].role).toBe("assistant");
   });
 });

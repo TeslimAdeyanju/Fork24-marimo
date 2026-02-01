@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from marimo._dependencies.dependencies import DependencyManager
 from marimo._plugins import ui
 from marimo._plugins.ui._impl.dataframes.transforms.types import Condition
 from marimo._plugins.ui._impl.table import (
+    CHART_MAX_ROWS_STRING_VALUE_COUNTS,
     DEFAULT_MAX_COLUMNS,
     MAX_COLUMNS_NOT_PROVIDED,
     CalculateTopKRowsArgs,
@@ -33,14 +35,14 @@ from marimo._runtime.functions import EmptyArgs
 from marimo._runtime.runtime import Kernel
 from marimo._utils.data_uri import from_data_uri
 from marimo._utils.platform import is_windows
-from tests._data.mocks import create_dataframes
+from tests._data.mocks import NON_EAGER_LIBS, create_dataframes
 
 if TYPE_CHECKING:
     import pandas as pd
 
 
 @pytest.fixture
-def dtm() -> None:
+def dtm() -> DefaultTableManager:
     return DefaultTableManager([])
 
 
@@ -129,7 +131,9 @@ def test_normalize_data(executing_kernel: Kernel) -> None:
 def test_sort_1d_list_of_strings(dtm: DefaultTableManager) -> None:
     data = ["banana", "apple", "cherry", "date", "elderberry"]
     dtm.data = _normalize_data(data)
-    sorted_data = dtm.sort_values(by="value", descending=False).data
+    sorted_data = dtm.sort_values(
+        [SortArgs(by="value", descending=False)]
+    ).data
     expected_data = [
         {"value": "apple"},
         {"value": "banana"},
@@ -143,7 +147,9 @@ def test_sort_1d_list_of_strings(dtm: DefaultTableManager) -> None:
 def test_sort_1d_list_of_integers(dtm: DefaultTableManager) -> None:
     data = [42, 17, 23, 99, 8]
     dtm.data = _normalize_data(data)
-    sorted_data = dtm.sort_values(by="value", descending=False).data
+    sorted_data = dtm.sort_values(
+        [SortArgs(by="value", descending=False)]
+    ).data
     expected_data = [
         {"value": 8},
         {"value": 17},
@@ -163,10 +169,12 @@ def test_sort_list_of_dicts(dtm: DefaultTableManager) -> None:
         {"name": "Eve", "age": 22, "birth_year": date(2002, 1, 30)},
     ]
     dtm.data = _normalize_data(data)
-    sorted_data = dtm.sort_values(by="age", descending=True).data
+    sorted_data = dtm.sort_values([SortArgs(by="age", descending=True)]).data
 
     with pytest.raises(KeyError):
-        _res = dtm.sort_values(by="missing_column", descending=True).data
+        _res = dtm.sort_values(
+            [SortArgs(by="missing_column", descending=True)]
+        ).data
 
     expected_data = [
         {"name": "Charlie", "age": 35, "birth_year": date(1989, 12, 1)},
@@ -191,10 +199,14 @@ def test_sort_dict_of_lists(dtm: DefaultTableManager) -> None:
         "net_worth": [1000, 2000, 1500, 1800, 1700],
     }
     dtm.data = _normalize_data(data)
-    sorted_data = dtm.sort_values(by="net_worth", descending=False).data
+    sorted_data = dtm.sort_values(
+        [SortArgs(by="net_worth", descending=False)]
+    ).data
 
     with pytest.raises(KeyError):
-        _res = dtm.sort_values(by="missing_column", descending=True).data
+        _res = dtm.sort_values(
+            [SortArgs(by="missing_column", descending=True)]
+        ).data
 
     expected_data = {
         "company": [
@@ -219,10 +231,12 @@ def test_sort_dict_of_tuples(dtm: DefaultTableManager) -> None:
         "key5": (7, 9, 11),
     }
     dtm.data = _normalize_data(data)
-    sorted_data = dtm.sort_values(by="key1", descending=True).data
+    sorted_data = dtm.sort_values([SortArgs(by="key1", descending=True)]).data
 
     with pytest.raises(KeyError):
-        _res = dtm.sort_values(by="missing_column", descending=True).data
+        _res = dtm.sort_values(
+            [SortArgs(by="missing_column", descending=True)]
+        ).data
 
     expected_data = [
         {"key1": 42, "key2": 99, "key3": 34, "key4": 1, "key5": 7},
@@ -293,7 +307,7 @@ def test_value_with_sorting_then_selection() -> None:
 
     table._search(
         SearchTableArgs(
-            sort=SortArgs("value", descending=True),
+            sort=[SortArgs(by="value", descending=True)],
             page_size=10,
             page_number=0,
         )
@@ -304,10 +318,7 @@ def test_value_with_sorting_then_selection() -> None:
 
     table._search(
         SearchTableArgs(
-            sort=SortArgs(
-                "value",
-                descending=False,
-            ),
+            sort=[SortArgs(by="value", descending=False)],
             page_size=10,
             page_number=0,
         )
@@ -321,7 +332,7 @@ def test_value_with_sorting_then_selection() -> None:
     "df",
     create_dataframes(
         {"a": ["x", "z", "y"]},
-        exclude=["ibis", "duckdb", "lazy-polars"],
+        exclude=NON_EAGER_LIBS,
     ),
 )
 def test_value_with_sorting_then_selection_dfs(df: Any) -> None:
@@ -330,7 +341,7 @@ def test_value_with_sorting_then_selection_dfs(df: Any) -> None:
     table = ui.table(df)
     table._search(
         SearchTableArgs(
-            sort=SortArgs("a", descending=True),
+            sort=[SortArgs(by="a", descending=True)],
             page_size=10,
             page_number=0,
         )
@@ -341,7 +352,7 @@ def test_value_with_sorting_then_selection_dfs(df: Any) -> None:
 
     table._search(
         SearchTableArgs(
-            sort=SortArgs("a", descending=False),
+            sort=[SortArgs(by="a", descending=False)],
             page_size=10,
             page_number=0,
         )
@@ -396,7 +407,7 @@ def test_value_with_search_then_selection() -> None:
     "df",
     create_dataframes(
         {"a": ["foo", "bar", "baz"]},
-        exclude=["ibis", "duckdb", "lazy-polars"],
+        exclude=NON_EAGER_LIBS,
     ),
 )
 def test_value_with_search_then_selection_dfs(df: Any) -> None:
@@ -444,7 +455,7 @@ def test_value_with_search_then_selection_dfs(df: Any) -> None:
     "df",
     create_dataframes(
         {"a": ["foo", "bar", "baz"]},
-        exclude=["ibis", "duckdb", "lazy-polars"],
+        exclude=NON_EAGER_LIBS,
     ),
 )
 def test_value_with_search_then_cell_selection_dfs(df: Any) -> None:
@@ -516,7 +527,7 @@ def test_value_with_selection_then_sorting_dict_of_lists() -> None:
 
     table._search(
         SearchTableArgs(
-            sort=SortArgs("net_worth", descending=True),
+            sort=[SortArgs(by="net_worth", descending=True)],
             page_size=10,
             page_number=0,
         )
@@ -559,7 +570,7 @@ def test_value_with_cell_selection_then_sorting_dict_of_lists() -> None:
 
     table._search(
         SearchTableArgs(
-            sort=SortArgs("net_worth", descending=True),
+            sort=[SortArgs(by="net_worth", descending=True)],
             page_size=10,
             page_number=0,
         )
@@ -575,14 +586,6 @@ def test_value_with_cell_selection_then_sorting_dict_of_lists() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    "df", create_dataframes({"a": [1, 2, 3]}, include=["ibis"])
-)
-def test_value_with_cell_selection_unsupported_for_ibis(df: Any) -> None:
-    with pytest.raises(NotImplementedError):
-        _table = ui.table(df, selection="multi-cell")
-
-
 def test_search_sort_nonexistent_columns() -> None:
     data = ["banana", "apple", "cherry", "date", "elderberry"]
     table = ui.table(data)
@@ -590,7 +593,7 @@ def test_search_sort_nonexistent_columns() -> None:
     # no error raised
     table._search(
         SearchTableArgs(
-            sort=SortArgs("missing_column", descending=False),
+            sort=[SortArgs(by="missing_column", descending=False)],
             page_size=10,
             page_number=0,
         )
@@ -695,7 +698,7 @@ def test_get_row_ids_for_lists() -> None:
             "fruits": ["banana", "apple", "cherry"] * 3,
             "quantity": [10, 20, 30] * 3,
         },
-        exclude=["ibis", "duckdb", "lazy-polars"],
+        exclude=NON_EAGER_LIBS,
     ),
 )
 def test_get_row_ids_with_df(df: any) -> None:
@@ -848,9 +851,7 @@ def test_table_with_too_many_rows_column_summaries_disabled() -> None:
     data = {"a": list(range(20))}
     table = ui.table(data, _internal_summary_row_limit=10)
 
-    summaries_disabled = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries_disabled = table._get_column_summaries(ColumnSummariesArgs())
     assert summaries_disabled.is_disabled is True
 
     # search results are 2 and 12
@@ -861,9 +862,7 @@ def test_table_with_too_many_rows_column_summaries_disabled() -> None:
             page_number=0,
         )
     )
-    summaries_enabled = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries_enabled = table._get_column_summaries(ColumnSummariesArgs())
     assert summaries_enabled.is_disabled is False
 
 
@@ -871,11 +870,9 @@ def test_with_too_many_rows_column_charts_disabled() -> None:
     data = {"a": list(range(20))}
     table = ui.table(data, _internal_column_charts_row_limit=10)
 
-    charts_disabled = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    charts_disabled = table._get_column_summaries(ColumnSummariesArgs())
+    assert charts_disabled.show_charts is False
     assert charts_disabled.is_disabled is False
-    assert charts_disabled.data is None
 
     # search results are 2 and 12
     table._search(
@@ -885,14 +882,14 @@ def test_with_too_many_rows_column_charts_disabled() -> None:
             page_number=0,
         )
     )
-    charts_enabled = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    charts_enabled = table._get_column_summaries(ColumnSummariesArgs())
+    assert charts_enabled.show_charts is True
+    assert charts_enabled.data is None
     assert charts_enabled.is_disabled is False
 
 
 @pytest.mark.skipif(is_windows(), reason=r"windows returns \r instead")
-def test__get_column_summaries_after_search() -> None:
+def test_get_column_summaries_after_search() -> None:
     data = {"a": list(range(20))}
     table = ui.table(data)
 
@@ -904,35 +901,30 @@ def test__get_column_summaries_after_search() -> None:
             page_number=0,
         )
     )
-    summaries = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries = table._get_column_summaries(ColumnSummariesArgs())
+    assert summaries.show_charts is True
     assert summaries.is_disabled is False
-    summaries_data = from_data_uri(summaries.data)[1].decode("utf-8")
-    # Result is csv or json
-    assert summaries_data in ["a\n2\n12\n", '[{"a": 2}, {"a": 12}]']
     # We don't have column summaries for non-dataframe data
     assert summaries.stats["a"].min is None
     assert summaries.stats["a"].max is None
 
 
-@pytest.mark.skipif(
-    not DependencyManager.pandas.has(), reason="Pandas not installed"
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes({"a": list(range(20))}, exclude=NON_EAGER_LIBS),
 )
-def test__get_column_summaries_after_search_df() -> None:
-    import pandas as pd
-
-    table = ui.table(pd.DataFrame({"a": list(range(20))}))
-    summaries = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+def test_get_column_summaries_after_search_df(df: Any) -> None:
+    table = ui.table(df)
+    summaries = table._get_column_summaries(ColumnSummariesArgs())
+    assert summaries.show_charts is True
     assert summaries.is_disabled is False
-    assert isinstance(summaries.data, str)
-    assert summaries.data.startswith(
-        "data:text/plain;base64,"
-    ) or summaries.data.startswith(
-        "data:application/vnd.apache.arrow.file;base64,"
-    )
+    # Different dataframe types return different formats
+    FORMATS = [
+        "data:text/plain;base64,",  # arrow format for polars
+        "data:application/vnd.apache.arrow.file;base64,",
+        "data:text/csv;base64,",
+    ]
+
     assert summaries.stats["a"].min == 0
     assert summaries.stats["a"].max == 19
 
@@ -944,17 +936,9 @@ def test__get_column_summaries_after_search_df() -> None:
             page_number=0,
         )
     )
-    summaries = table._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries = table._get_column_summaries(ColumnSummariesArgs())
+    assert summaries.show_charts is True
     assert summaries.is_disabled is False
-    assert isinstance(summaries.data, str)
-    # Result is csv
-    assert summaries.data.startswith(
-        "data:text/csv;base64,"
-    ) or summaries.data.startswith(
-        "data:application/vnd.apache.arrow.file;base64,"
-    )
     # We don't have column summaries for non-dataframe data
     assert summaries.stats["a"].min == 2
     assert summaries.stats["a"].max == 12
@@ -966,40 +950,34 @@ def test_show_column_summaries_modes():
 
     # Test stats-only mode
     table_stats = ui.table(data, show_column_summaries="stats")
-    summaries_stats = table_stats._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries_stats = table_stats._get_column_summaries(ColumnSummariesArgs())
+    assert summaries_stats.show_charts is False
     assert summaries_stats.is_disabled is False
-    assert summaries_stats.data is None
     assert summaries_stats.bin_values == {}
     assert summaries_stats.value_counts == {}
     assert len(summaries_stats.stats) > 0
 
     # Test chart-only mode
     table_chart = ui.table(data, show_column_summaries="chart")
-    summaries_chart = table_chart._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries_chart = table_chart._get_column_summaries(ColumnSummariesArgs())
+    assert summaries_chart.show_charts is True
     assert summaries_chart.is_disabled is False
-    assert summaries_chart.data is not None
     assert len(summaries_chart.stats) == 0
 
     # Test default mode (both stats and chart)
     table_both = ui.table(data, show_column_summaries=True)
-    summaries_both = table_both._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
-    )
+    summaries_both = table_both._get_column_summaries(ColumnSummariesArgs())
+    assert summaries_both.show_charts is True
     assert summaries_both.is_disabled is False
-    assert summaries_both.data is not None
     assert len(summaries_both.stats) > 0
 
     # Test disabled mode
     table_disabled = ui.table(data, show_column_summaries=False)
     summaries_disabled = table_disabled._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
+        ColumnSummariesArgs()
     )
     assert summaries_disabled.is_disabled is False
-    assert summaries_disabled.data is None
+    assert summaries_disabled.show_charts is False
     assert summaries_disabled.bin_values == {}
     assert summaries_disabled.value_counts == {}
     assert len(summaries_disabled.stats) == 0
@@ -1007,12 +985,25 @@ def test_show_column_summaries_modes():
     # Test Default behavior
     table_default = ui.table(data)
     summaries_default = table_default._get_column_summaries(
-        ColumnSummariesArgs(precompute=False)
+        ColumnSummariesArgs()
     )
+    assert summaries_default.show_charts is True
     assert summaries_default.is_disabled is False
-    assert summaries_default.data is not None
     assert len(summaries_default.stats) > 0
     assert table_default._component_args["show-column-summaries"] is True
+
+
+class TestTableBinValues:
+    @pytest.mark.parametrize(
+        "df",
+        create_dataframes({"a": [None] * 20}, exclude=["duckdb"]),
+    )
+    def test_bin_values_all_nulls(self, df: Any) -> None:
+        table = ui.table(df)
+        summaries = table._get_column_summaries(ColumnSummariesArgs())
+
+        # Returns empty list
+        assert summaries.bin_values == {"a": []}
 
 
 class TestTableGetValueCounts:
@@ -1054,6 +1045,20 @@ class TestTableGetValueCounts:
             ValueCount(value="4", count=1),
         ]
 
+    @pytest.mark.skipif(
+        not DependencyManager.pandas.has(), reason="Pandas not installed"
+    )
+    def test_rows_string_value_counts_limit(self) -> None:
+        import pandas as pd
+
+        data = pd.DataFrame(
+            {"a": [str(i) for i in range(CHART_MAX_ROWS_STRING_VALUE_COUNTS)]}
+        )
+        table = ui.table(data)
+        summaries = table._get_column_summaries(ColumnSummariesArgs())
+        assert summaries.value_counts == {}  # too many unique values
+        assert summaries.data is None
+
     def test_with_smaller_limit(self, table: ui.table) -> None:
         value_counts = table._get_value_counts(
             column="repeat", size=2, total_rows=self.total_rows
@@ -1062,6 +1067,18 @@ class TestTableGetValueCounts:
             ValueCount(value="1", count=2),
             ValueCount(value="others", count=3),
         ]
+
+    def test_with_search(self, table: ui.table) -> None:
+        result = table._search(
+            SearchTableArgs(query="1", page_size=10, page_number=0)
+        )
+        rows = table._searched_manager.get_num_rows(force=True)
+        assert rows is not None
+        assert result.total_rows == 2
+        value_counts = table._get_value_counts(
+            column="repeat", size=2, total_rows=rows
+        )
+        assert value_counts == [ValueCount(value="1", count=2)]
 
 
 def test_table_with_frozen_columns() -> None:
@@ -1079,13 +1096,12 @@ def test_table_with_frozen_columns() -> None:
     assert table._component_args["freeze-columns-right"] == ["d", "e"]
 
 
-@pytest.mark.skipif(
-    not DependencyManager.pandas.has(), reason="Pandas not installed"
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes({"a": [1, 2, 3], "b": ["abc", "def", None]}),
 )
-def test_table_with_filtered_columns_pandas() -> None:
-    import pandas as pd
-
-    table = ui.table(pd.DataFrame({"a": [1, 2, 3], "b": ["abc", "def", None]}))
+def test_table_with_filtered_columns(df: Any) -> None:
+    table = ui.table(df)
     result = table._search(
         SearchTableArgs(
             filters=[Condition(column_id="b", operator="contains", value="f")],
@@ -1093,24 +1109,6 @@ def test_table_with_filtered_columns_pandas() -> None:
             page_number=0,
         )
     )
-    assert result.total_rows == 1
-
-
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(), reason="Polars not installed"
-)
-def test_table_with_filtered_columns_polars() -> None:
-    import polars as pl
-
-    table = ui.table(pl.DataFrame({"a": [1, 2, 3], "b": ["abc", "def", None]}))
-    result = table._search(
-        SearchTableArgs(
-            filters=[Condition(column_id="b", operator="contains", value="a")],
-            page_size=10,
-            page_number=0,
-        )
-    )
-
     assert result.total_rows == 1
 
 
@@ -1151,7 +1149,7 @@ def test_data_with_rich_components():
             "a": [1, 2],
             "b": [ui.text("foo"), ui.slider(start=0, stop=10)],
         },
-        include=["polars", "pandas"],
+        exclude=["pyarrow", "ibis"],
     ),
 )
 def test_data_with_rich_components_in_data_frames(df: Any) -> None:
@@ -1183,123 +1181,156 @@ def test_show_column_summaries_disabled():
 
     summaries = table._get_column_summaries(EmptyArgs())
     assert summaries.is_disabled is False
-    assert summaries.data is None
     assert len(summaries.stats) == 0
 
 
 @pytest.mark.skipif(
-    not DependencyManager.pandas.has(), reason="Pandas not installed"
+    not DependencyManager.polars.has(), reason="Polars not installed"
 )
-def test_show_download():
-    import pandas as pd
+def test_column_summaries_fallback(monkeypatch):
+    import polars as pl
 
-    data = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
-    table_default = ui.table(data)
+    data = pl.DataFrame(
+        {
+            "a": [1, 2, 3] * 200,
+            "b": [4, 5, 6] * 200,
+            "c": [7, 8, 9] * 200,
+        }
+    )
+    table = ui.table(data)
+
+    def always_fail_get_bin_values(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("Intentional bin failure")
+
+    monkeypatch.setattr(
+        table._manager, "get_bin_values", always_fail_get_bin_values
+    )
+
+    summaries = table._get_column_summaries(ColumnSummariesArgs())
+    assert summaries.is_disabled is False
+    assert summaries.bin_values == {}
+    assert summaries.value_counts == {}
+    assert summaries.show_charts is True
+    # Should have chart data
+    assert summaries.data is not None
+
+
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {"a": [1, 2, 3], "b": [4, 5, 6]},
+    ),
+)
+def test_show_download(df: Any) -> None:
+    table_default = ui.table(df)
     assert table_default._component_args["show-download"] is True
 
-    table_true = ui.table(data, show_download=True)
+    table_true = ui.table(df, show_download=True)
     assert table_true._component_args["show-download"] is True
 
-    table_false = ui.table(data, show_download=False)
+    table_false = ui.table(df, show_download=False)
     assert table_false._component_args["show-download"] is False
 
 
 DOWNLOAD_FORMATS = ["csv", "json", "parquet"]
 
 
-@pytest.mark.skipif(
-    not DependencyManager.pandas.has(), reason="Pandas not installed"
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {"cities": ["Newark", "New York", "Los Angeles"]},
+        exclude=NON_EAGER_LIBS,
+    ),
 )
-def test_download_as_pandas() -> None:
-    """Test downloading table data as different formats with pandas DataFrame."""
-    import pandas as pd
-    from pandas.testing import assert_frame_equal
+def test_download_as(df: Any) -> None:
+    """Test downloading table data as different formats with DataFrames."""
+    import io
 
-    data = pd.DataFrame({"cities": ["Newark", "New York", "Los Angeles"]})
-    table = ui.table(data)
+    import narwhals as nw
+
+    nw_df = nw.from_native(df)
+    table = ui.table(df)
 
     def download_and_convert(
         format_type: str, table_instance: ui.table
-    ) -> pd.DataFrame:
-        """Helper to download and convert table data to DataFrame."""
-        download_str = table_instance._download_as(
-            DownloadAsArgs(format=format_type)
-        )
-        return _convert_data_bytes_to_pandas_df(download_str, format_type)
-
-    # Test base downloads (full data)
-    for format_type in DOWNLOAD_FORMATS:
-        downloaded_df = download_and_convert(format_type, table)
-        assert_frame_equal(data, downloaded_df)
-
-    # Test downloads with search filter
-    table._search(SearchTableArgs(query="New", page_size=10, page_number=0))
-    for format_type in DOWNLOAD_FORMATS:
-        filtered_df = download_and_convert(format_type, table)
-        assert len(filtered_df) == 2
-        assert all(filtered_df["cities"].isin(["Newark", "New York"]))
-
-    # Test downloads with selection (includes search from before)
-    table._convert_value(["1"])
-    for format_type in DOWNLOAD_FORMATS:
-        selected_df = download_and_convert(format_type, table)
-        assert len(selected_df) == 1
-        assert selected_df["cities"].iloc[0] == "New York"
-
-
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(), reason="Polars not installed"
-)
-def test_download_as_polars() -> None:
-    """Test downloading table data as different formats with polars DataFrame."""
-    import polars as pl
-    from polars.testing import assert_frame_equal
-
-    data = pl.DataFrame({"cities": ["Newark", "New York", "Los Angeles"]})
-    table = ui.table(data)
-
-    def download_and_convert(
-        format_type: str, table_instance: ui.table
-    ) -> pl.DataFrame:
+    ) -> Any:
         """Helper to download and convert table data to DataFrame."""
         download_str = table_instance._download_as(
             DownloadAsArgs(format=format_type)
         )
         data_bytes = from_data_uri(download_str)[1]
+        buffer = io.BytesIO(data_bytes)
 
+        # Convert back to native format using narwhals
         if format_type == "json":
-            return pl.read_json(data_bytes)
-        if format_type == "parquet":
-            return pl.read_parquet(data_bytes)
-        if format_type == "csv":
-            return pl.read_csv(data_bytes)
+            if DependencyManager.pandas.has():
+                import pandas as pd
+
+                return pd.read_json(buffer)
+            elif DependencyManager.polars.has():
+                import polars as pl
+
+                return pl.read_json(buffer)
+        elif format_type == "parquet":
+            if DependencyManager.pandas.has():
+                import pandas as pd
+
+                return pd.read_parquet(buffer)
+            elif DependencyManager.polars.has():
+                import polars as pl
+
+                return pl.read_parquet(buffer)
+        elif format_type == "csv":
+            if DependencyManager.pandas.has():
+                import pandas as pd
+
+                return pd.read_csv(buffer)
+            elif DependencyManager.polars.has():
+                import polars as pl
+
+                return pl.read_csv(buffer)
         raise ValueError(f"Unsupported format: {format_type}")
 
     # Test base downloads (full data)
     for format_type in DOWNLOAD_FORMATS:
         downloaded_df = download_and_convert(format_type, table)
-        assert_frame_equal(data, downloaded_df)
+        downloaded_nw = nw.from_native(downloaded_df)
+        assert len(downloaded_nw) == len(nw_df)
+        assert downloaded_nw["cities"].to_list() == nw_df["cities"].to_list()
 
     # Test downloads with search filter
     table._search(SearchTableArgs(query="New", page_size=10, page_number=0))
     for format_type in DOWNLOAD_FORMATS:
         filtered_df = download_and_convert(format_type, table)
-        assert len(filtered_df) == 2
-        assert all(filtered_df["cities"].is_in(["Newark", "New York"]))
+        filtered_nw = nw.from_native(filtered_df)
+        assert len(filtered_nw) == 2
+        cities = filtered_nw["cities"].to_list()
+        assert all(city in ["Newark", "New York"] for city in cities)
 
-    # Test downloads with selection (includes search from before)
-    table._convert_value(["1"])
+    # Test downloads with row selection (includes search from before)
+    table._convert_value(["1"])  # select one row of the filtered view
     for format_type in DOWNLOAD_FORMATS:
         selected_df = download_and_convert(format_type, table)
-        assert len(selected_df) == 1
-        assert selected_df["cities"][0] == "New York"
+        selected_nw = nw.from_native(selected_df)
+        # For row selection, selection is respected (single row)
+        assert len(selected_nw) == 1
+        assert selected_nw["cities"][0] == "New York"
 
 
-def test_download_as_for_unsupported_cell_selection() -> None:
-    for selection in ["single-cell", "multi-cell"]:
-        table = ui.table(data=[], selection=selection)
-        with pytest.raises(NotImplementedError):
-            table._download_as(DownloadAsArgs(format="csv"))
+def test_download_as_ignores_cell_selection() -> None:
+    # Download should ignore selection when in cell selection modes
+    data = {"a": [1, 2, 3]}
+    table = ui.table(data, selection="multi-cell")
+    table._search(SearchTableArgs(query="2", page_size=10, page_number=0))
+    # Make a cell selection; download should still include the filtered view
+    table._convert_value([{"rowId": "0", "columnName": "a"}])
+    # Use JSON format to avoid optional dependencies
+    url = table._download_as(DownloadAsArgs(format="json"))
+    data_bytes = from_data_uri(url)[1]
+    rows = json.loads(data_bytes)
+    assert isinstance(rows, list)
+    assert len(rows) == 1
+    assert int(rows[0]["a"]) == 2
 
 
 @pytest.mark.skipif(
@@ -1313,18 +1344,18 @@ def test_download_as_for_supported_cell_selection() -> None:
         table._download_as(DownloadAsArgs(format="csv"))
 
 
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(),
-    reason="Polars not installed",
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {"a": [1, 2, 3], "b": ["x", "y", "z"]},
+        exclude=NON_EAGER_LIBS,
+    ),
 )
 @pytest.mark.parametrize(
     "fmt",
     ["csv", "json", "parquet"],
 )
-def test_download_as_for_dataframes(fmt: str) -> None:
-    import polars as pl
-
-    df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+def test_download_as_for_dataframes(df: Any, fmt: str) -> None:
     table = ui.table(df)
     table._download_as(DownloadAsArgs(format=fmt))
 
@@ -1505,14 +1536,16 @@ def test_column_clamping_with_single_column():
     assert table._component_args["field-types"] is None
 
 
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(), reason="Polars not installed"
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {f"col{i}": [1, 2, 3] for i in range(60)},
+        exclude=NON_EAGER_LIBS
+        + ["pyarrow"],  # pyarrow doesn't have field-types
+    ),
 )
-def test_column_clamping_with_polars():
-    import polars as pl
-
-    data = pl.DataFrame({f"col{i}": [1, 2, 3] for i in range(60)})
-    table = ui.table(data)
+def test_column_clamping_with_dataframes(df: Any):
+    table = ui.table(df)
 
     # Check that the table is clamped
     assert len(table._manager.get_column_names()) == 60
@@ -1524,7 +1557,7 @@ def test_column_clamping_with_polars():
     # Field types are not clamped
     assert len(table._component_args["field-types"]) == 60
 
-    table = ui.table(data, max_columns=40)
+    table = ui.table(df, max_columns=40)
 
     # Check that the table is clamped
     assert len(table._manager.get_column_names()) == 60
@@ -1536,7 +1569,7 @@ def test_column_clamping_with_polars():
     # Field types aren't clamped
     assert len(table._component_args["field-types"]) == 60
 
-    table = ui.table(data, max_columns=None)
+    table = ui.table(df, max_columns=None)
 
     # Check that the table is not clamped
     assert len(table._manager.get_column_names()) == 60
@@ -1661,18 +1694,27 @@ def test_cell_style_edge_cases():
     }
 
 
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(), reason="Polars not installed"
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {
+            "column_0": [
+                "apples",
+                "apples",
+                "bananas",
+                "bananas",
+                "carrots",
+                "carrots",
+            ]
+        },
+        exclude=NON_EAGER_LIBS,
+    ),
 )
-def test_cell_search_df_styles():
+def test_cell_search_df_styles(df: Any):
     def always_green(_row, _col, _value):
         return {"backgroundColor": "green"}
 
-    import polars as pl
-
-    data = ["apples", "apples", "bananas", "bananas", "carrots", "carrots"]
-
-    table = ui.table(pl.DataFrame(data), style_cell=always_green)
+    table = ui.table(df, style_cell=always_green)
     page = table._search(
         SearchTableArgs(page_size=2, page_number=0, query="carrot")
     )
@@ -1682,24 +1724,33 @@ def test_cell_search_df_styles():
     }
 
 
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(), reason="Polars not installed"
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {
+            "column_0": [
+                "apples",
+                "apples",
+                "bananas",
+                "bananas",
+                "carrots",
+                "carrots",
+            ]
+        },
+        exclude=NON_EAGER_LIBS,
+    ),
 )
-@pytest.mark.xfail(reason="Sorted rows are not supported for styling yet")
-def test_cell_search_df_styles_sorted():
+def test_cell_search_df_styles_sorted(df: Any):
     def always_green(_row, _col, _value):
         return {"backgroundColor": "green"}
 
-    import polars as pl
-
-    data = ["apples", "apples", "bananas", "bananas", "carrots", "carrots"]
-    table = ui.table(pl.DataFrame(data), style_cell=always_green)
+    table = ui.table(df, style_cell=always_green)
     page = table._search(
         SearchTableArgs(
             page_size=2,
             page_number=0,
             query="",
-            sort=SortArgs(by="column_0", descending=True),
+            sort=[SortArgs(by="column_0", descending=True)],
         )
     )
     # Sorted rows have reverse order of row_ids
@@ -1757,27 +1808,26 @@ def test_json_multi_col_idx_table() -> None:
     ]
 
 
+LAZY_DATAFRAMES = ["lazy-polars", "duckdb", "ibis"]
+
+
 # Test for lazy dataframes
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(),
-    reason="Polars not installed",
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {"col1": range(1000), "col2": [f"value_{i}" for i in range(1000)]},
+        include=LAZY_DATAFRAMES,
+    ),
 )
-def test_lazy_dataframe() -> None:
+def test_lazy_dataframe(df: Any) -> None:
     import warnings
 
     # Capture warnings that might be raised during lazy dataframe operations
     with warnings.catch_warnings(record=True) as recorded_warnings:
-        import polars as pl
-
         num_rows = 21
 
-        # Create a large dataframe that would trigger lazy loading
-        large_df = pl.LazyFrame(
-            {"col1": range(1000), "col2": [f"value_{i}" for i in range(1000)]}
-        )
-
         # Create table with _internal_lazy=True to simulate lazy loading
-        table = ui.table.lazy(large_df, page_size=num_rows)
+        table = ui.table.lazy(df, page_size=num_rows)
 
         # Verify the lazy flag is set
         assert table._lazy is True
@@ -1811,7 +1861,6 @@ def test_lazy_dataframe() -> None:
         json_data = json.loads(search_response.data)
         assert len(json_data) == num_rows
 
-    # Warning comes from search
     assert len(recorded_warnings) == 0
 
     # Select rows
@@ -1819,17 +1868,14 @@ def test_lazy_dataframe() -> None:
     assert value is None
 
 
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(),
-    reason="Polars not installed",
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {"col1": range(1000), "col2": [f"value_{i}" for i in range(1000)]},
+        exclude=LAZY_DATAFRAMES,
+    ),
 )
-def test_lazy_dataframe_with_non_lazy_dataframe():
-    import polars as pl
-
-    # Create a Polars LazyFrame
-    df = pl.DataFrame(
-        {"col1": range(1000), "col2": [f"value_{i}" for i in range(1000)]}
-    )
+def test_lazy_dataframe_with_non_lazy_dataframe(df: Any):
     with pytest.raises(ValueError):
         table = ui.table.lazy(df)
 
@@ -1889,6 +1935,18 @@ def test_default_table_page_size():
 
 def test_default_table_max_columns():
     assert get_default_table_max_columns() == DEFAULT_MAX_COLUMNS
+
+
+def test_table_max_height():
+    table = ui.table(
+        [{"a": i} for i in range(100)], pagination=False, max_height=300
+    )
+    # Backend should expose optional UI hints when max_height is set
+    assert table._component_args["max-height"] == 300
+
+    table_no_height = ui.table([1, 2, 3])
+    # Keys may be absent when not configured
+    assert table_no_height._component_args["max-height"] is None
 
 
 def test_calculate_top_k_rows():
@@ -1971,7 +2029,7 @@ def test_max_columns_not_provided_with_sort():
     search_args = SearchTableArgs(
         page_size=10,
         page_number=0,
-        sort=SortArgs(by="col0", descending=True),
+        sort=[SortArgs(by="col0", descending=True)],
         max_columns=MAX_COLUMNS_NOT_PROVIDED,
     )
     response = table._search(search_args)
@@ -1982,7 +2040,7 @@ def test_max_columns_not_provided_with_sort():
     search_args = SearchTableArgs(
         page_size=10,
         page_number=0,
-        sort=SortArgs(by="col0", descending=True),
+        sort=[SortArgs(by="col0", descending=True)],
         max_columns=20,
     )
     response = table._search(search_args)
@@ -1993,7 +2051,7 @@ def test_max_columns_not_provided_with_sort():
     search_args = SearchTableArgs(
         page_size=10,
         page_number=0,
-        sort=SortArgs(by="col0", descending=True),
+        sort=[SortArgs(by="col0", descending=True)],
         max_columns=None,
     )
     response = table._search(search_args)
@@ -2001,16 +2059,15 @@ def test_max_columns_not_provided_with_sort():
     assert len(result_data[0].keys()) == 100
 
 
-@pytest.mark.skipif(
-    not DependencyManager.polars.has(),
-    reason="Pandas not installed",
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {f"col{i}": [1, 2, 3] for i in range(100)},
+    ),
 )
-def test_max_columns_not_provided_with_filters():
+def test_max_columns_not_provided_with_filters(df: Any):
     # Create data with many columns
-    import polars as pl
-
-    data = pl.DataFrame({f"col{i}": [1, 2, 3] for i in range(100)})
-    table = ui.table(data)
+    table = ui.table(df, selection=None)
 
     # Test filters with default max_columns
     search_args = SearchTableArgs(
@@ -2021,7 +2078,8 @@ def test_max_columns_not_provided_with_filters():
     )
     response = table._search(search_args)
     result_data = json.loads(response.data)
-    assert len(result_data[0].keys()) == 50
+    # Pandas has an index column (empty string), others don't
+    assert len(result_data[0].keys()) in (50, 51)
 
     # Test filters with explicit max_columns
     search_args = SearchTableArgs(
@@ -2032,7 +2090,8 @@ def test_max_columns_not_provided_with_filters():
     )
     response = table._search(search_args)
     result_data = json.loads(response.data)
-    assert len(result_data[0].keys()) == 20
+    # Pandas has an index column (empty string), others don't
+    assert len(result_data[0].keys()) in (20, 21)
 
     # Test filters with max_columns=None
     search_args = SearchTableArgs(
@@ -2043,7 +2102,62 @@ def test_max_columns_not_provided_with_filters():
     )
     response = table._search(search_args)
     result_data = json.loads(response.data)
-    assert len(result_data[0].keys()) == 101  # +1 for marimo_row_id
+    # Pandas has an index column (empty string), others have marimo_row_id
+    print(result_data[0].keys())
+    assert len(result_data[0].keys()) in (100, 101)
+
+
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {"a": [1, 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]},
+    ),
+)
+def test_filters_with_nonexistent_columns(df: Any):
+    """Test that filters for non-existent columns are filtered out gracefully."""
+    table = ui.table(df)
+
+    # Test with filters containing both existing and non-existent columns
+    search_args = SearchTableArgs(
+        page_size=10,
+        page_number=0,
+        filters=[
+            Condition(column_id="a", operator="==", value=1),  # exists
+            Condition(
+                column_id="nonexistent", operator="==", value=10
+            ),  # doesn't exist
+            Condition(column_id="b", operator=">=", value=4),  # exists
+            Condition(
+                column_id="missing_col", operator="!=", value=0
+            ),  # doesn't exist
+        ],
+    )
+
+    # Should not raise an error and should apply only the valid filters
+    response = table._search(search_args)
+
+    # Should return 1 row (where a==1 and b>=4)
+    assert response.total_rows == 1
+    result_data = json.loads(response.data)
+    assert len(result_data) == 1
+    assert result_data[0]["a"] == 1
+    assert result_data[0]["b"] == 4
+    assert result_data[0]["c"] == 7
+
+    # Test with all non-existent columns (should return all rows)
+    search_args_all_invalid = SearchTableArgs(
+        page_size=10,
+        page_number=0,
+        filters=[
+            Condition(column_id="nonexistent1", operator="==", value=1),
+            Condition(column_id="nonexistent2", operator="!=", value=2),
+        ],
+    )
+
+    response = table._search(search_args_all_invalid)
+    assert response.total_rows == 3  # All rows returned since no valid filters
+    result_data = json.loads(response.data)
+    assert len(result_data) == 3
 
 
 def test_show_page_size_selector_property():
@@ -2070,7 +2184,7 @@ def test_show_toggles_app_mode():
 
     with patch("marimo._plugins.ui._impl.table.get_mode", return_value="run"):
         table_default = ui.table(data)
-        assert table_default._component_args["show-column-explorer"] is False
+        assert table_default._component_args["show-column-explorer"] is True
         assert table_default._component_args["show-chart-builder"] is False
 
 
@@ -2109,3 +2223,218 @@ def test_table_uses_default_max_columns():
 
     # Should use the default max_columns (50)
     assert table._max_columns == DEFAULT_MAX_COLUMNS
+
+
+@pytest.mark.skipif(
+    not DependencyManager.pandas.has(),
+    reason="Pandas not installed",
+)
+def test_table_with_timestamp_column_name():
+    # Create data with timestamps as columns
+    import pandas as pd
+
+    now = pd.Timestamp.now()
+    data = {now + pd.Timedelta(minutes=i): [i, i + 1, i + 2] for i in range(5)}
+
+    # Create table without specifying max_columns
+    table = ui.table(pd.DataFrame(data))
+
+    # Should use the default max_columns (50)
+    assert table._max_columns == DEFAULT_MAX_COLUMNS
+
+
+def test_cell_initial_hover_texts():
+    def hover_text(row: str, col: str, value: Any) -> str:
+        return f"{row}:{col}={value}"
+
+    table = ui.table([1, 2, 3], hover_template=hover_text)
+    assert "cell-hover-texts" in table._args.args
+    cell_hover = table._args.args["cell-hover-texts"]
+    assert len(cell_hover) == 3
+    assert "1" in cell_hover
+    assert "value" in cell_hover["1"]
+    assert cell_hover["1"]["value"] == "1:value=2"
+
+
+def test_hover_template_string_arg():
+    table = ui.table([1, 2], hover_template="Value: {{value}}")
+    # String template should pass through and per-cell map should be None
+    assert table._args.args["hover-template"] == "Value: {{value}}"
+    assert "cell-hover-texts" in table._args.args
+    assert table._args.args["cell-hover-texts"] is None
+
+
+def test_cell_hover_of_next_page():
+    def hover_text(row: str, col: str, value: Any) -> str:
+        return f"{row}:{col}={value}"
+
+    data = [
+        {"a": 1, "b": 2},
+        {"a": 3, "b": 4},
+        {"a": 5, "b": 6},
+        {"a": 7, "b": 8},
+    ]
+
+    table = ui.table(data, page_size=2, hover_template=hover_text)
+    last_page = table._search(SearchTableArgs(page_size=2, page_number=1))
+    cell_hover = last_page.cell_hover_texts
+    assert len(cell_hover) == 2
+    assert "2" in cell_hover
+    assert "a" in cell_hover["2"]
+    assert cell_hover["2"]["a"] == "2:a=5"
+
+
+def test_cell_hover_last_page():
+    def hover_text(row: str, col: str, value: Any) -> str:
+        return f"{row}:{col}={value}"
+
+    data = [{"a": 1}, {"a": 2}, {"a": 3}]
+    table = ui.table(data, page_size=2, hover_template=hover_text)
+    last_page = table._search(SearchTableArgs(page_size=2, page_number=1))
+    cell_hover = last_page.cell_hover_texts
+    assert len(cell_hover) == 1
+    assert "2" in cell_hover
+    assert "a" in cell_hover["2"]
+    assert cell_hover["2"]["a"] == "2:a=3"
+
+
+def test_cell_hover_edge_cases():
+    def hover_text(row: str, col: str, value: Any) -> str:
+        return f"{row}:{col}={value}"
+
+    # Empty data
+    table = ui.table([], hover_template=hover_text)
+    response = table._search(SearchTableArgs(page_size=10, page_number=0))
+    assert response.cell_hover_texts == {}
+
+    # Single row
+    table = ui.table([{"a": 1}], hover_template=hover_text)
+    response = table._search(SearchTableArgs(page_size=10, page_number=0))
+    assert response.cell_hover_texts == {"0": {"a": "0:a=1"}}
+
+    # Page size larger than total rows
+    table = ui.table([{"a": 1}, {"a": 2}], hover_template=hover_text)
+    response = table._search(SearchTableArgs(page_size=10, page_number=0))
+    assert response.cell_hover_texts == {
+        "0": {"a": "0:a=1"},
+        "1": {"a": "1:a=2"},
+    }
+
+    # Skip beyond total rows
+    response = table._search(SearchTableArgs(page_size=10, page_number=1))
+    assert response.cell_hover_texts == {}
+
+    # With too_many total rows
+    table = ui.table(
+        [{"a": 1}, {"a": 2}],
+        hover_template=hover_text,
+        _internal_total_rows="too_many",
+    )
+    response = table._search(SearchTableArgs(page_size=10, page_number=0))
+    assert response.cell_hover_texts == {
+        "0": {"a": "0:a=1"},
+        "1": {"a": "1:a=2"},
+    }
+
+
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {
+            "column_0": [
+                "apples",
+                "apples",
+                "bananas",
+                "bananas",
+                "carrots",
+                "carrots",
+            ]
+        },
+        exclude=NON_EAGER_LIBS,
+    ),
+)
+def test_cell_search_df_hover_texts(df: Any):
+    def hover_text(_row: str, _col: str, value: Any) -> str:
+        return f"hover:{value}"
+
+    table = ui.table(df, hover_template=hover_text)
+    page = table._search(
+        SearchTableArgs(page_size=2, page_number=0, query="carrot")
+    )
+    assert page.cell_hover_texts == {
+        "4": {"column_0": "hover:carrots"},
+        "5": {"column_0": "hover:carrots"},
+    }
+
+
+@pytest.mark.parametrize(
+    "df",
+    create_dataframes(
+        {
+            "column_0": [
+                "apples",
+                "apples",
+                "bananas",
+                "bananas",
+                "carrots",
+                "carrots",
+            ]
+        },
+    ),
+)
+@pytest.mark.xfail(reason="Sorted rows are not supported for hover yet")
+def test_cell_search_df_hover_texts_sorted(df: Any):
+    def hover_text(_row: str, _col: str, value: Any) -> str:
+        return f"hover:{value}"
+
+    table = ui.table(df, hover_template=hover_text)
+    page = table._search(
+        SearchTableArgs(
+            page_size=2,
+            page_number=0,
+            query="",
+            sort=SortArgs(by="column_0", descending=True),
+        )
+    )
+    assert page.cell_hover_texts == {
+        "4": {"column_0": "hover:carrots"},
+        "5": {"column_0": "hover:carrots"},
+    }
+
+
+@pytest.mark.skipif(
+    not DependencyManager.polars.has(), reason="Polars not installed"
+)
+def test_polars_enums_in_list():
+    import polars as pl
+
+    class MyEnum(Enum):
+        A = 1
+        B = 2
+        C = 3
+        D = 4
+
+    # Create 10 rows cycling through enum values B, C, D, A...
+    enum_names = [e.name for e in MyEnum]
+    rows = [{"value": [enum_names[i % len(enum_names)]]} for i in range(1, 11)]
+
+    schema = {"value": pl.List(pl.Enum(enum_names))}
+    df = pl.DataFrame(rows, schema=schema)
+
+    table = ui.table(df, selection=None)
+
+    # First page
+    response = table._search(SearchTableArgs(page_size=5, page_number=0))
+    assert (
+        response.data
+        == '[{"value":["B"]},{"value":["C"]},{"value":["D"]},{"value":["A"]},{"value":["B"]}]'
+    )
+
+    # Second page
+    response_next_page = table._search(
+        SearchTableArgs(page_size=5, page_number=1)
+    )
+    assert (
+        response_next_page.data
+        == '[{"value":["C"]},{"value":["D"]},{"value":["A"]},{"value":["B"]},{"value":["C"]}]'
+    )

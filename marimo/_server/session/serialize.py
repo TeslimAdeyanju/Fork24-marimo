@@ -2,21 +2,22 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
-from marimo import __version__, _loggers
+from marimo import _loggers
 from marimo._ast.cell_manager import CellManager
 from marimo._messaging.cell_output import CellChannel, CellOutput
 from marimo._messaging.errors import (
     Error as MarimoError,
     MarimoExceptionRaisedError,
+    UnknownError,
 )
 from marimo._messaging.mimetypes import KnownMimeType
+from marimo._messaging.msgspec_encoder import asdict
 from marimo._messaging.ops import CellOp
 from marimo._schemas.notebook import (
     NotebookCell,
@@ -40,7 +41,9 @@ from marimo._server.session.session_view import SessionView
 from marimo._types.ids import CellId_t
 from marimo._utils.async_path import AsyncPath
 from marimo._utils.background_task import AsyncBackgroundTask
+from marimo._utils.code import hash_code
 from marimo._utils.lists import as_list
+from marimo._version import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -58,9 +61,16 @@ def _normalize_error(error: Union[MarimoError, dict[str, Any]]) -> ErrorOutput:
             traceback=error.get("traceback", []),
         )
     else:
+        if isinstance(error, UnknownError) and error.error_type:
+            # UnknownError with custom error_type field
+            ename = error.error_type
+        else:
+            # For msgspec structs with tagged unions, the type is in the serialized form
+            ename = asdict(error).get("type", "UnknownError")
+
         return ErrorOutput(
             type="error",
-            ename=error.type,
+            ename=ename,
             evalue=error.describe(),
             traceback=getattr(error, "traceback", []),
         )
@@ -141,6 +151,7 @@ def serialize_session_view(
                         if console_out.channel == CellChannel.STDERR
                         else "stdout",
                         text=str(console_out.data),
+                        mimetype=console_out.mimetype,
                     )
                 )
 
@@ -162,8 +173,18 @@ def serialize_session_view(
     )
 
 
-def deserialize_session(session: NotebookSessionV1) -> SessionView:
-    """Convert a NotebookSession schema to a SessionView."""
+def deserialize_session(
+    session: NotebookSessionV1,
+    code_hash_to_cell_id: dict[str, CellId_t],
+) -> SessionView:
+    """Convert a NotebookSession schema to a SessionView.
+
+    Args:
+        session: The serialized notebook session
+        code_hash_to_cell_id: Mapping from code hash to current cell ID.
+            Cells are matched by code hash instead of using the stored cell_id,
+            which handles cases where cells were added/deleted.
+    """
     view = SessionView()
 
     for cell in session["cells"]:
@@ -176,7 +197,6 @@ def deserialize_session(session: NotebookSessionV1) -> SessionView:
                     CellOutput.errors(
                         [
                             MarimoExceptionRaisedError(
-                                type="exception",
                                 exception_type=output["ename"],
                                 msg=output["evalue"],
                                 raising_cell=None,
@@ -224,17 +244,54 @@ def deserialize_session(session: NotebookSessionV1) -> SessionView:
                     )
                 )
             else:
+                is_stderr = console["name"] == "stderr"
+                data = console["text"]
+
+                # Use mimetype from console if available (new format)
+                if "mimetype" in console and console["mimetype"] is not None:
+                    mimetype = console["mimetype"]
+                else:
+                    # Backward compatibility: detect mimetype using heuristics
+                    # HACK: We need to detect tracebacks in stderr by checking for HTML
+                    # formatting.
+                    is_traceback = (
+                        is_stderr
+                        and isinstance(data, str)
+                        and data.startswith('<span class="codehilite">')
+                    )
+                    mimetype = cast(
+                        KnownMimeType,
+                        "application/vnd.marimo+traceback"
+                        if is_traceback
+                        else "text/plain",
+                    )
+
                 console_outputs.append(
                     CellOutput(
                         channel=CellChannel.STDERR
-                        if console["name"] == "stderr"
+                        if is_stderr
                         else CellChannel.STDOUT,
-                        data=console["text"],
-                        mimetype="text/plain",
+                        data=data,
+                        mimetype=mimetype,
                     )
                 )
 
-        cell_id = CellId_t(cell["id"])
+        # Match cell by code_hash
+        if cell["code_hash"] is None:
+            # No code hash available - skip this cell
+            LOGGER.debug(
+                f"Skipping cached output for cell {cell['id']} - no code_hash"
+            )
+            continue
+
+        cell_id = code_hash_to_cell_id.get(cell["code_hash"])
+        if cell_id is None:
+            # No matching cell found by code hash - skip this cell
+            LOGGER.debug(
+                f"Skipping cached output for cell with hash "
+                f"{cell['code_hash'][:8]}... - no matching cell found"
+            )
+            continue
 
         view.cell_operations[cell_id] = CellOp(
             cell_id=cell_id,
@@ -304,7 +361,7 @@ def get_session_cache_file(path: Path) -> Path:
 def _hash_code(code: Optional[str]) -> Optional[str]:
     if code is None or code == "":
         return None
-    return hashlib.md5(code.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return hash_code(code)
 
 
 class SessionCacheWriter(AsyncBackgroundTask):
@@ -359,6 +416,7 @@ class SessionCacheWriter(AsyncBackgroundTask):
 class SessionCacheKey:
     codes: tuple[str | None, ...]
     marimo_version: str
+    cell_ids: tuple[CellId_t, ...]
 
 
 class SessionCacheManager:
@@ -443,5 +501,16 @@ class SessionCacheManager:
             LOGGER.info("Session view cache miss")
             return self.session_view
 
-        self.session_view = deserialize_session(notebook_session)
+        # Build mapping from code_hash to cell_id based on current cell IDs
+        # This handles cases where cell_ids have changed even though code matches
+        code_hash_to_cell_id: dict[str, CellId_t] = {}
+        for code, cell_id in zip(key.codes, key.cell_ids):
+            code_hash = _hash_code(code)
+            if code_hash is not None:
+                # Map the code_hash to the current cell_id from the key
+                code_hash_to_cell_id[code_hash] = cell_id
+
+        self.session_view = deserialize_session(
+            notebook_session, code_hash_to_cell_id
+        )
         return self.session_view

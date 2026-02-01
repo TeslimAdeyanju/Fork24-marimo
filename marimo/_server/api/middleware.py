@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from http.client import HTTPResponse, HTTPSConnection
@@ -31,21 +32,54 @@ from starlette.middleware.base import (
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.websockets import WebSocket, WebSocketState
-from websockets import ConnectionClosed, connect
+from websockets import ClientConnection, ConnectionClosed, connect
 
 from marimo import _loggers
 from marimo._config.settings import GLOBAL_SETTINGS
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._server.api.auth import validate_auth
 from marimo._server.api.deps import AppState, AppStateBase
+from marimo._server.codes import WebSocketCodes
 from marimo._server.model import SessionMode
+from marimo._server.utils import print_tabbed
+from marimo._server.uvicorn_utils import close_uvicorn
 from marimo._tracer import server_tracer
 
 if TYPE_CHECKING:
+    from starlette.datastructures import State
     from starlette.requests import HTTPConnection
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 LOGGER = _loggers.marimo_logger()
+
+
+def _handle_proxy_connection_error(
+    _error: ConnectionRefusedError,
+    path: str,
+    custom_message: str | None = None,
+) -> Response:
+    """Handle connection errors for proxy requests to backend services."""
+    LOGGER.debug(f"Connection refused for {path}")
+    content = (
+        custom_message
+        or "Service is not available. Please try again or restart the service."
+    )
+    return Response(
+        content=content,
+        status_code=503,
+        media_type="text/plain",
+    )
+
+
+def create_proxy_error_handler(
+    custom_message: str,
+) -> Callable[[ConnectionRefusedError, str], Response]:
+    """Create a custom error handler that wraps the default with a custom message."""
+
+    def handler(error: ConnectionRefusedError, path: str) -> Response:
+        return _handle_proxy_connection_error(error, path, custom_message)
+
+    return handler
 
 
 class AuthBackend(AuthenticationBackend):
@@ -335,11 +369,20 @@ class ProxyMiddleware:
         proxy_path: str,
         target_url: Union[str, Callable[[str], str]],
         path_rewrite: Callable[[str], str] | None = None,
+        connection_error_handler: Callable[
+            [ConnectionRefusedError, str], Response
+        ]
+        | None = None,
     ) -> None:
         self.app = app
         self.path = proxy_path.rstrip("/")
         self.target_url = target_url
         self.path_rewrite = path_rewrite
+        self.connection_error_handler = (
+            connection_error_handler
+            if connection_error_handler
+            else _handle_proxy_connection_error
+        )
 
     def _get_target_url(self, path: str) -> str:
         """Get target URL either from rewrite function or default MPL logic."""
@@ -403,13 +446,21 @@ class ProxyMiddleware:
             content=request.stream(),
         )
 
-        rp_resp = await client.send(rp_req, stream=True)
-        response = StreamingResponse(
-            rp_resp.aiter_raw(),
-            status_code=rp_resp.status_code,
-            headers=rp_resp.headers,
-            background=BackgroundTask(rp_resp.aclose),
-        )
+        response: Union[StreamingResponse, Response]
+        try:
+            rp_resp = await client.send(rp_req, stream=True)
+            response = StreamingResponse(
+                rp_resp.aiter_raw(),
+                status_code=rp_resp.status_code,
+                headers=rp_resp.headers,
+                background=BackgroundTask(rp_resp.aclose),
+            )
+        except ConnectionRefusedError as e:
+            if self.connection_error_handler is not None:
+                response = self.connection_error_handler(e, request.url.path)
+            else:
+                raise
+
         await response(scope, receive, send)
 
     async def _proxy_websocket(
@@ -422,7 +473,45 @@ class ProxyMiddleware:
                 ws_url = f"{ws_url}?{'&'.join(f'{k}={v}' for k, v in original_params.items())}"
             await websocket.accept()
 
-            async with connect(ws_url) as ws_client:
+            # Try to connect to the upstream WebSocket with retries
+            max_retries = 3
+            exponential_backoff = 1.5
+
+            async def get_client() -> ClientConnection:
+                retry_delay = 0.5  # seconds
+
+                for attempt in range(max_retries):
+                    try:
+                        ws_client = await connect(ws_url)
+                        LOGGER.debug(f"Successfully connected to {ws_url}")
+                        return ws_client
+                    except Exception as e:
+                        LOGGER.info(
+                            f"WebSocket connection attempt {attempt + 1}/{max_retries} failed for {ws_url}: {e}"
+                        )
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= exponential_backoff
+                        else:
+                            LOGGER.error(
+                                f"Failed to connect to {ws_url} after {max_retries} attempts. Final error: {e}"
+                            )
+                            # Close the client WebSocket with a meaningful error
+                            if (
+                                websocket.client_state
+                                != WebSocketState.DISCONNECTED
+                            ):
+                                await websocket.close(
+                                    code=WebSocketCodes.UNEXPECTED_ERROR,
+                                    reason="Failed to connect to LSP server",
+                                )
+                            raise e
+
+                raise ValueError("Failed to connect to LSP server")
+
+            ws_client = await get_client()
+
+            async with ws_client:
 
                 async def client_to_upstream() -> None:
                     try:
@@ -483,7 +572,68 @@ class ProxyMiddleware:
                         await websocket.close()
                     await ws_client.close()
         except Exception as e:
-            LOGGER.error(f"WebSocket proxy error: {e}")
+            LOGGER.error(f"WebSocket proxy error for {ws_url}: {e}")
+            # Check if this is a connection error suggesting the LSP server isn't running
+            if "Connection refused" in str(e) or "Connect call failed" in str(
+                e
+            ):
+                LOGGER.error(
+                    f"LSP server appears to be down at {ws_url}. Check if the LSP server started successfully."
+                )
             if websocket.client_state != WebSocketState.DISCONNECTED:
-                await websocket.close(code=1011)  # Internal error
+                await websocket.close(code=WebSocketCodes.UNEXPECTED_ERROR)
             raise
+
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    def __init__(
+        self,
+        app: ASGIApp,
+        dispatch: DispatchFunction | None = None,
+        *,
+        timeout_duration_minutes: float,
+        app_state: State,
+    ) -> None:
+        super().__init__(app, dispatch)
+
+        self.app_state = app_state
+        self.app_state.timeout_tracker = time.time()
+        self.timeout_duration_minutes = timeout_duration_minutes
+
+        asyncio.create_task(self.monitor())
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        request = Request(scope)
+
+        request.app.state.timeout_tracker = time.time()
+
+        return await self.app(scope, receive, send)
+
+    async def monitor(self) -> None:
+        while True:
+            LOGGER.debug("Checking inactivity timeout")
+            timeout_at = (
+                self.app_state.timeout_tracker
+                + self.timeout_duration_minutes * 60
+            )
+
+            now = time.time()
+            if now >= timeout_at:
+                print_tabbed("Timeout due to inactivity")
+                self.shutdown()
+                break
+
+            # Sleep until 1s after the next potential activity timeout
+            await asyncio.sleep(timeout_at - now + 1)
+
+    def shutdown(self) -> None:
+        manager = self.app_state.session_manager
+
+        manager.shutdown()
+        if self.app_state.server:
+            close_uvicorn(self.app_state.server)

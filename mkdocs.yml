@@ -48,6 +48,7 @@ markdown_extensions:
       smart_enable: all
   - pymdownx.caret
   - pymdownx.details
+  - pymdownx.blocks.details
   - pymdownx.emoji: null
   - pymdownx.highlight:
       anchor_linenums: true
@@ -58,6 +59,7 @@ markdown_extensions:
   - pymdownx.magiclink
   - pymdownx.mark
   - pymdownx.smartsymbols
+  - pymdownx.snippets
   - pymdownx.superfences:
       custom_fences:
         - class: mermaid
@@ -91,6 +93,23 @@ nav:
           - Import star: guides/understanding_errors/import_star.md
           - Cycles: guides/understanding_errors/cycles.md
           - Setup References: guides/understanding_errors/setup.md
+      - Debugging notebooks: guides/debugging.md
+      - Lint Rules:
+          - Lint Rules: guides/lint_rules/index.md
+          - Rules:
+              - Unparsable cells: guides/lint_rules/rules/unparsable_cells.md
+              - Multiple definitions: guides/lint_rules/rules/multiple_definitions.md
+              - Cycle dependencies: guides/lint_rules/rules/cycle_dependencies.md
+              - Setup cell dependencies: guides/lint_rules/rules/setup_cell_dependencies.md
+              - Syntax error: guides/lint_rules/rules/invalid_syntax.md
+              - Self Import: guides/lint_rules/rules/self_import.md
+              - General formatting: guides/lint_rules/rules/general_formatting.md
+              - Parse stdout: guides/lint_rules/rules/parse_stdout.md
+              - Parse stderr: guides/lint_rules/rules/parse_stderr.md
+              - Empty cells: guides/lint_rules/rules/empty_cells.md
+              - Markdown Indentation: guides/lint_rules/rules/markdown_indentation.md
+              - SQL parse error: guides/lint_rules/rules/sql_parse_error.md
+              - Misc parse log: guides/lint_rules/rules/misc_log_capture.md
       - SQL, dataframes, and plots:
           - SQL, dataframes, and plots: guides/working_with_data/index.md
           - DataFrames: guides/working_with_data/dataframes.md
@@ -101,6 +120,7 @@ nav:
           - Importing packages: guides/package_management/importing_packages.md
           - Installing packages: guides/package_management/installing_packages.md
           - Inlining dependencies: guides/package_management/inlining_dependencies.md
+          - Notebooks in existing projects: guides/package_management/notebooks_in_projects.md
           - Using uv: guides/package_management/using_uv.md
       - Generate with AI:
           - Generate with AI: guides/generate_with_ai/index.md
@@ -112,6 +132,9 @@ nav:
           - Editor overview: guides/editor_features/overview.md
           - Understanding dataflow: guides/editor_features/dataflow.md
           - AI completion: guides/editor_features/ai_completion.md
+          - Model Context Protocol: guides/editor_features/mcp.md
+          - AI tools: guides/editor_features/tools.md
+          - Agents: guides/editor_features/agents.md
           - Language Server: guides/editor_features/language_server.md
           - Package management: guides/editor_features/package_management.md
           - Module autoreloading: guides/editor_features/module_autoreloading.md
@@ -125,6 +148,7 @@ nav:
           - pytest: guides/testing/pytest.md
           - doctest: guides/testing/doctest.md
       - Export to other formats: guides/exporting.md
+      - Share cloud notebooks with molab: guides/molab.md
       - Publish to the web:
           - Publish to the web: guides/publishing/index.md
           - Embedding: guides/publishing/embedding.md
@@ -153,9 +177,11 @@ nav:
       - Configuration:
           - Configuration: guides/configuration/index.md
           - Runtime configuration: guides/configuration/runtime_configuration.md
+          - LLM Providers: guides/configuration/llm_providers.md
           - HTML head: guides/configuration/html_head.md
           - Theming: guides/configuration/theming.md
           - Snippets: guides/configuration/snippets.md
+          - i18n: guides/configuration/internationalization.md
       - Coming from other tools:
           - Coming from other tools: guides/coming_from/index.md
           - Jupytext: guides/coming_from/jupytext.md
@@ -183,6 +209,7 @@ nav:
           - Chat: api/inputs/chat.md
           - Checkbox: api/inputs/checkbox.md
           - Code Editor: api/inputs/code_editor.md
+          - Data Editor: api/inputs/data_editor.md
           - Data Explorer: api/inputs/data_explorer.md
           - DataFrame: api/inputs/dataframe.md
           - Dates: api/inputs/dates.md
@@ -214,11 +241,12 @@ nav:
           - Json: api/layouts/json.md
           - Justify: api/layouts/justify.md
           - Lazy: api/layouts/lazy.md
+          - Outline: api/layouts/outline.md
           - Plain: api/layouts/plain.md
           - Routes: api/layouts/routes.md
           - Sidebar: api/layouts/sidebar.md
-          - Stat: api/layouts/stat.md
           - Stacks: api/layouts/stacks.md
+          - Stat: api/layouts/stat.md
           - Tree: api/layouts/tree.md
       - Plotting: api/plotting.md
       - Media:
@@ -226,6 +254,7 @@ nav:
           - Audio: api/media/audio.md
           - Download: api/media/download.md
           - Image: api/media/image.md
+          - Image Compare: api/media/image_compare.md
           - PDF: api/media/pdf.md
           - Plain Text: api/media/plain_text.md
           - Video: api/media/video.md
@@ -239,6 +268,7 @@ nav:
       - State: api/state.md
       - App: api/app.md
       - Cell: api/cell.md
+      - Watch: api/watch.md
       - Miscellaneous: api/miscellaneous.md
   - Commands: cli.md
   - FAQ: faq.md
@@ -254,6 +284,7 @@ nav:
       - Google Cloud Storage: integrations/google_cloud_storage.md
       - Google Sheets: integrations/google_sheets.md
       - MotherDuck: integrations/motherduck.md
+  - Security: security.md
 plugins:
   - search
   - social:
@@ -334,21 +365,29 @@ theme:
   logo: _static/marimo-logotype-horizontal.png
   name: material
   palette:
-    - media: (prefers-color-scheme)
+    # Palette toggle for system preference and use brightness-auto icon
+    - media: "(prefers-color-scheme)"
       toggle:
-        icon: material/brightness-7
+        icon: material/brightness-auto
         name: Switch to light mode
-    - media: '(prefers-color-scheme: light)'
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
       primary: white
       accent: teal
       scheme: default
       toggle:
-        icon: material/brightness-4
+        icon: material/brightness-7
         name: Switch to dark mode
-    - media: '(prefers-color-scheme: dark)'
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
       primary: black
       accent: teal
       scheme: slate
       toggle:
-        icon: material/brightness-7
+        icon: material/brightness-4
         name: Switch to system preference
+
+exclude_docs: |
+  apps/README.md

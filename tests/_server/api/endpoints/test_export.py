@@ -49,7 +49,7 @@ def test_export_html(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     body = response.text
@@ -71,7 +71,7 @@ def test_export_html_skew_protection(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     assert response.status_code == 401
@@ -89,7 +89,7 @@ def test_export_html_no_code(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": False,
+            "includeCode": False,
         },
     )
     body = response.text
@@ -108,7 +108,7 @@ def test_export_html_file_not_found(client: TestClient) -> None:
         json={
             "download": False,
             "files": ["/test-10.csv"],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     assert response.status_code == 200
@@ -127,7 +127,7 @@ def test_export_html_no_code_in_read(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     body = response.text
@@ -143,7 +143,7 @@ def test_export_html_no_code_in_read(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": False,
+            "includeCode": False,
         },
     )
     body = response.text
@@ -222,7 +222,7 @@ def test_auto_export_html(client: TestClient, temp_marimo_file: str) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     assert response.status_code == 200
@@ -234,7 +234,7 @@ def test_auto_export_html(client: TestClient, temp_marimo_file: str) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     # Not modified response
@@ -267,7 +267,7 @@ def test_auto_export_html_no_code(
         json={
             "download": False,
             "files": [],
-            "include_code": False,
+            "includeCode": False,
         },
     )
     assert response.status_code == 200
@@ -279,7 +279,7 @@ def test_auto_export_html_no_code(
         json={
             "download": False,
             "files": [],
-            "include_code": False,
+            "includeCode": False,
         },
     )
     # Not modified response
@@ -306,7 +306,7 @@ def test_auto_export_html_no_operations(
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
     # Not modified response
@@ -388,6 +388,7 @@ def test_auto_export_ipynb(
     not DependencyManager.nbformat.has() or is_windows(),
     reason="nbformat not installed or on Windows",
 )
+@pytest.mark.flaky(reruns=3)
 @with_session(SESSION_ID)
 def test_auto_export_ipynb_with_new_cell(
     client: TestClient, *, temp_marimo_file: str
@@ -406,7 +407,7 @@ def test_auto_export_ipynb_with_new_cell(
         "/api/kernel/run",
         headers=HEADERS,
         json={
-            "cell_ids": ["new_cell"],
+            "cellIds": ["new_cell"],
             "codes": ["3.14"],
         },
     )
@@ -419,7 +420,7 @@ def test_auto_export_ipynb_with_new_cell(
         "/api/kernel/save",
         headers=HEADERS,
         json={
-            "cell_ids": ["new_cell"],
+            "cellIds": ["new_cell"],
             "filename": temp_marimo_file,
             "codes": ["3.14"],
             "names": ["_"],
@@ -493,7 +494,7 @@ def test_export_html_with_script_config(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": False,
+            "includeCode": False,
         },
     )
     body = response.text
@@ -513,7 +514,7 @@ def test_auto_export_html_unnamed_file(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
 
@@ -535,7 +536,7 @@ def test_export_html_unnamed_file(client: TestClient) -> None:
         json={
             "download": False,
             "files": [],
-            "include_code": True,
+            "includeCode": True,
         },
     )
 

@@ -1,24 +1,28 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 import type { EditorView } from "@codemirror/view";
+import type { QuotePrefixKind } from "@marimo-team/smart-cells";
 import { InfoIcon, PaintRollerIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { normalizeName } from "@/core/cells/names";
+import { type ConnectionName, DUCKDB_ENGINE } from "@/core/datasets/engines";
 import { useAutoGrowInputProps } from "@/hooks/useAutoGrowInputProps";
 import { formatSQL } from "../../format";
 import { languageAdapterState } from "../extension";
 import { MarkdownLanguageAdapter } from "../languages/markdown";
-import { SQLLanguageAdapter } from "../languages/sql";
+import {
+  SQLLanguageAdapter,
+  updateSQLDialectFromConnection,
+} from "../languages/sql/sql";
 import {
   type LanguageMetadata,
   languageMetadataField,
   updateLanguageMetadata,
 } from "../metadata";
 import type { LanguageMetadataOf } from "../types";
-import type { QuotePrefixKind } from "../utils/quotes";
 import { getQuotePrefix, MarkdownQuotePrefixTooltip } from "./markdown";
-import { SQLEngineSelect } from "./sql";
+import { SQLEngineSelect, SQLModeSelect } from "./sql";
 
 const Divider = () => <div className="h-4 border-r border-border" />;
 
@@ -61,8 +65,13 @@ export const LanguagePanelComponent: React.FC<{
       });
     };
 
+    const switchEngine = (engine: ConnectionName) => {
+      triggerUpdate<Metadata1>({ engine });
+      updateSQLDialectFromConnection(view, engine);
+    };
+
     actions = (
-      <div className="flex flex-1 gap-2 relative items-center">
+      <div className="flex flex-1 gap-2 items-center">
         <label className="flex gap-2 items-center">
           <span className="select-none">Output variable: </span>
           <input
@@ -77,17 +86,16 @@ export const LanguagePanelComponent: React.FC<{
                 sanitizeAndTriggerUpdate(e);
               }
             }}
-            className="min-w-14 w-auto border border-border rounded px-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="min-w-14 w-auto border border-border rounded px-1 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
           />
           <span {...spanProps} />
         </label>
         <SQLEngineSelect
           selectedEngine={metadata.engine}
-          onChange={(engine) => {
-            triggerUpdate<Metadata1>({ engine });
-          }}
+          onChange={switchEngine}
         />
         <div className="flex items-center gap-2 ml-auto">
+          {metadata.engine === DUCKDB_ENGINE && <SQLModeSelect />}
           <Tooltip content="Format SQL">
             <Button
               variant="text"

@@ -57,8 +57,14 @@ def test_merge_config() -> None:
             },
         )
     )
-    assert prev_config["ai"]["open_ai"]["api_key"] == "super_secret"
-    assert prev_config["ai"]["google"]["api_key"] == "google_secret"
+    assert (
+        prev_config.get("ai", {}).get("open_ai", {}).get("api_key")
+        == "super_secret"
+    )
+    assert (
+        prev_config.get("ai", {}).get("google", {}).get("api_key")
+        == "google_secret"
+    )
 
     new_config = merge_config(
         prev_config,
@@ -74,9 +80,17 @@ def test_merge_config() -> None:
         ),
     )
 
-    assert new_config["ai"]["open_ai"]["api_key"] == "super_secret"
-    assert new_config["ai"]["open_ai"]["model"] == "davinci"
-    assert new_config["ai"]["google"]["api_key"] == "google_secret"
+    assert (
+        new_config.get("ai", {}).get("open_ai", {}).get("api_key")
+        == "super_secret"
+    )
+    assert (
+        new_config.get("ai", {}).get("open_ai", {}).get("model") == "davinci"
+    )
+    assert (
+        new_config.get("ai", {}).get("google", {}).get("api_key")
+        == "google_secret"
+    )
 
 
 def test_merge_config_with_keymap_overrides() -> None:
@@ -108,8 +122,11 @@ def test_merge_config_with_keymap_overrides() -> None:
     )
 
     assert new_config["keymap"]["preset"] == "vim"
-    assert "run-all" not in new_config["keymap"]["overrides"]
-    assert new_config["keymap"]["overrides"]["run-cell"] == "ctrl-enter"
+    assert "run-all" not in new_config.get("keymap", {}).get("overrides", {})
+    assert (
+        new_config.get("keymap", {}).get("overrides", {}).get("run-cell")
+        == "ctrl-enter"
+    )
 
     new_config = merge_config(
         prev_config,
@@ -122,4 +139,4 @@ def test_merge_config_with_keymap_overrides() -> None:
     )
 
     assert new_config["keymap"]["preset"] == "vim"
-    assert new_config["keymap"]["overrides"] == {}
+    assert new_config.get("keymap", {}).get("overrides", {}) == {}

@@ -10,25 +10,23 @@
 
 import marimo
 
-__generated_with = "0.8.19"
+__generated_with = "0.17.2"
 app = marimo.App(width="full")
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        """
-        # 🤗 Hugging Face dataset search and exploration
+def _(mo):
+    mo.md("""
+    # 🤗 Hugging Face dataset search and exploration
 
-        This notebook allows you to search and explore the datasets available on Hugging Face.
-        First you can search for a dataset using the filters provided. Then you can select a dataset and explore the parquet files that are available for that dataset. Finally you can use the SQL editor to query the parquet files and the dataframe editor to explore the results of your query.
-        """
-    )
+    This notebook allows you to search and explore the datasets available on Hugging Face.
+    First you can search for a dataset using the filters provided. Then you can select a dataset and explore the parquet files that are available for that dataset. Finally you can use the SQL editor to query the parquet files and the dataframe editor to explore the results of your query.
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def __(fetch_hugging_face_datasets, mo, pd):
+def _(fetch_hugging_face_datasets, mo, pd):
     # Load the datasets
     with mo.status.spinner(
         title="Loading datasets from Hugging Face",
@@ -40,7 +38,7 @@ def __(fetch_hugging_face_datasets, mo, pd):
 
 
 @app.cell(hide_code=True)
-def __(datasets, duckdb, print_month_year):
+def _(datasets, duckdb):
     # Extract info from the datasets
     all_tags = (
         duckdb.sql("""SELECT DISTINCT tags FROM datasets WHERE tags IS NOT NULL""")
@@ -56,7 +54,7 @@ def __(datasets, duckdb, print_month_year):
 
 
 @app.cell(hide_code=True)
-def __(all_tags, dataset_date_range, dataset_length, mo):
+def _(all_tags, dataset_date_range, dataset_length, mo):
     # Create stats cards
     stats = mo.hstack(
         [
@@ -80,7 +78,7 @@ def __(all_tags, dataset_date_range, dataset_length, mo):
 
 
 @app.cell
-def __(all_tags, mo, stats):
+def _(all_tags, mo, stats):
     # Search filters
     search_filter = mo.ui.text_area(
         label="Search",
@@ -98,7 +96,7 @@ def __(all_tags, mo, stats):
 
 
 @app.cell(hide_code=True)
-def __(datasets, duckdb, mo, search_filter, tag_filter):
+def _(datasets, duckdb, mo, search_filter, tag_filter):
     # Filter and display the datasets in a table
     datasets
     _fields = [
@@ -133,7 +131,7 @@ def __(datasets, duckdb, mo, search_filter, tag_filter):
 
 
 @app.cell
-def __(table):
+def _(table):
     selected_dataset = (
         table.value.iloc[0]
         if table.value is not None and len(table.value)
@@ -143,7 +141,7 @@ def __(table):
 
 
 @app.cell
-def __(mo, selected_dataset):
+def _(mo, selected_dataset):
     mo.stop(selected_dataset is None)
 
     mo.md(
@@ -163,7 +161,7 @@ def __(mo, selected_dataset):
 
 
 @app.cell
-def __(load_hugging_face_dataset, mo, selected_dataset):
+def _(load_hugging_face_dataset, mo, selected_dataset):
     # Load the selected dataset's parquet files
     mo.stop(selected_dataset is None)
 
@@ -183,7 +181,7 @@ def __(load_hugging_face_dataset, mo, selected_dataset):
 
 
 @app.cell
-def __(selected_parquet):
+def _(selected_parquet):
     has_selected_file = (
         selected_parquet.value is not None and len(selected_parquet.value) > 0
     )
@@ -192,7 +190,7 @@ def __(selected_parquet):
 
 
 @app.cell
-def __(duckdb, mo, url):
+def _(duckdb, mo, url):
     # Load the selected parquet into duckdb
 
     mo.stop(not url)
@@ -232,7 +230,7 @@ def __(duckdb, mo, url):
 
 
 @app.cell
-def __(has_selected_file, mo, render_sql_editor):
+def _(has_selected_file, mo, render_sql_editor):
     mo.stop(not has_selected_file)
 
     sql_editor = render_sql_editor()
@@ -256,7 +254,7 @@ def __(has_selected_file, mo, render_sql_editor):
 
 
 @app.cell
-def __(has_selected_file, mo, render_sql_results, sql_editor):
+def _(has_selected_file, mo, render_sql_results, sql_editor):
     mo.stop(not has_selected_file)
 
     render_sql_results(sql_editor)
@@ -264,7 +262,7 @@ def __(has_selected_file, mo, render_sql_results, sql_editor):
 
 
 @app.cell
-def __(datasets, mo, render_dataframe_editor):
+def _(datasets, mo, render_dataframe_editor):
     mo.stop(len(datasets) == 0)
 
     df_editor = render_dataframe_editor()
@@ -281,11 +279,11 @@ def __(datasets, mo, render_dataframe_editor):
             df_editor,
         ]
     )
-    return (df_editor,)
+    return
 
 
 @app.cell
-def __(con, mo, url):
+def _(con, mo, url):
     # UI renderers
 
 
@@ -316,18 +314,16 @@ def __(con, mo, url):
     return render_dataframe_editor, render_sql_editor, render_sql_results
 
 
-@app.cell
-def __():
-    # Utils
+@app.function
+# Utils
 
 
-    def print_month_year(date):
-        return date.strftime("%b %Y")
-    return (print_month_year,)
+def print_month_year(date):
+    return date.strftime("%b %Y")
 
 
 @app.cell
-def __(functools, json, pd, requests):
+def _(functools, json, pd, requests):
     # Cached requests
 
 
@@ -351,7 +347,7 @@ def __(functools, json, pd, requests):
 
 
 @app.cell
-def __():
+def _():
     import requests
     import json
     import functools

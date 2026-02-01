@@ -30,8 +30,11 @@ Install [pixi](https://github.com/prefix-dev/pixi) to manage your development en
 > Note that developing in Gitpod is not officially supported by the marimo team.
 
 ```bash
-pixi run hatch shell
+pixi shell
 ```
+
+If you have the right non-python dependencies installed via other methods (e.g. homebrew) you can simply activate your `marimo` development
+environment with `hatch shell`.
 
 Now you can install the environment frontend and Python dependencies.
 
@@ -45,16 +48,42 @@ After doing this, you can instantiate your marimo development environment by run
 make dev
 ```
 
+This will launch two processes, the backend one in port 2718 and the front end one in port 3000.
+
+In summary you will need to run:
+
+```bash
+pixi shell
+make fe && make py
+make dev
+```
+
+or if not using `pixi`:
+
+```bash
+hatch shell
+make fe && make py
+make dev
+```
+
+### `pre-commit` hooks
+
 You can optionally install [pre-commit](https://pre-commit.com/) hooks to automatically run the validation checks when making a commit:
 
 ```bash
 uvx pre-commit install
 ```
 
+or
+
+```bash
+pixi run pre-commit install
+```
+
 To build the frontend unminified, run:
 
 ```bash
-NODE_OPTIONS=--max_old_space_size=8192 NODE_ENV=development make fe -B
+NODE_ENV=development make fe -B
 ```
 
 ## `make` commands
@@ -157,19 +186,25 @@ make py-test
 Run a specific test
 
 ```bash
-hatch run test:test tests/_ast/
+hatch run +py=3.13 test:test tests/_ast/
+```
+
+Run all changed tests
+
+```bash
+hatch run +py=3.13 test:test --picked
 ```
 
 Run tests with optional dependencies
 
 ```bash
-hatch run test-optional:test tests/_ast/
+hatch run +py=3.13 test-optional:test tests/_ast/
 ```
 
-Run tests with a specific Python version
+Run tests across all Python versions (omit `+py`)
 
 ```bash
-hatch run +py=3.10 test:test tests/_ast/
+hatch run test:test tests/_ast/
 ```
 
 Run all tests across all Python versions
@@ -318,23 +353,13 @@ If you use vscode, you might find the following `settings.json` useful:
 }
 ```
 
-## Testing a branch from GitHub
+## PRs
 
-This requires `uv` to be installed. This may take a bit to install frontend dependencies and build the frontend.
+When submitting a pull request, marimo will run: lint, typecheck, and test jobs.
 
-```bash
-MARIMO_BUILD_FRONTEND=true \
-uvx --with git+https://github.com/marimo-team/marimo.git@BRANCH_NAME \
-marimo edit
-```
+We have some labels which can influence which tests are run:
 
-Additionally, you can run `marimo` from the main branch:
-
-```bash
-MARIMO_BUILD_FRONTEND=true \
-uvx --with git+https://github.com/marimo-team/marimo.git \
-marimo edit
-```
+- `test-all`: Run all tests across unchanged files as well.
 
 ## Your first PR
 

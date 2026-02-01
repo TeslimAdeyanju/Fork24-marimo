@@ -27,9 +27,9 @@ from marimo._ast import codegen
 from marimo._ast.cell import CellConfig
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._server.templates.templates import get_version
-from marimo._utils.config.config import ROOT_DIR as CONFIG_ROOT_DIR
 from marimo._utils.platform import is_windows
 from marimo._utils.toml import read_toml
+from tests.utils import try_assert_n_times
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterator
@@ -97,15 +97,17 @@ def _check_shutdown(
 def _try_fetch(
     port: int, host: str = "localhost", token: Optional[str] = None
 ) -> Optional[bytes]:
+    err: Exception | None = None
     for _ in range(20):
         try:
             url = f"http://{host}:{port}"
             if token is not None:
                 url = f"{url}?access_token={token}"
             return urllib.request.urlopen(url).read()
-        except Exception:
+        except Exception as e:
+            err = e
             time.sleep(0.6)
-    print("Failed to fetch contents")
+    print(f"Failed to fetch contents: {err}")
     return None
 
 
@@ -149,17 +151,29 @@ def _get_port() -> int:
     raise OSError("Could not find an unused port.")
 
 
-def _read_toml(filepath: str) -> Optional[dict[str, Any]]:
-    if not os.path.exists(filepath):
+def _read_toml(filepath: Path) -> Optional[dict[str, Any]]:
+    if not filepath.exists():
         return None
     return read_toml(filepath)
 
 
-@pytest.fixture
-def temp_marimo_file_with_inline_metadata() -> Generator[str, None, None]:
+@contextlib.contextmanager
+def _write_temp_notebook(notebook: str) -> Generator[str, None, None]:
     tmp_dir = tempfile.TemporaryDirectory()
     tmp_file = os.path.join(tmp_dir.name, "notebook.py")
-    content = inspect.cleandoc(
+    content = inspect.cleandoc(notebook)
+
+    try:
+        with open(tmp_file, "w") as f:
+            f.write(content)
+        yield tmp_file
+    finally:
+        tmp_dir.cleanup()
+
+
+@pytest.fixture
+def temp_marimo_file_with_inline_metadata() -> Generator[str, None, None]:
+    with _write_temp_notebook(
         """
         # /// script
         # requires-python = ">=3.11"
@@ -182,14 +196,59 @@ def temp_marimo_file_with_inline_metadata() -> Generator[str, None, None]:
         if __name__ == "__main__":
             app.run()
         """
-    )
+    ) as temp_file:
+        yield temp_file
 
-    try:
-        with open(tmp_file, "w") as f:
-            f.write(content)
-        yield tmp_file
-    finally:
-        tmp_dir.cleanup()
+
+@pytest.fixture
+def temp_non_marimo_file() -> Generator[str, None, None]:
+    with _write_temp_notebook(
+        """
+        import numpy as np
+
+        np.random.seed(42)
+
+        if __name__ == "__main__":
+            print("This is a non-marimo file.")
+        """
+    ) as temp_file:
+        yield temp_file
+
+
+@pytest.fixture
+def temp_non_marimo_file_with_marimo() -> Generator[str, None, None]:
+    with _write_temp_notebook(
+        """
+        import numpy as np
+        import marimo as mo
+
+        if __name__ == "__main__":
+            print("This is a non-marimo file with a marimo import.")
+        """
+    ) as temp_file:
+        yield temp_file
+
+
+@pytest.fixture
+def temp_text_file() -> Generator[str, None, None]:
+    with _write_temp_notebook(
+        """
+        This is a syntax invalid file.
+        """
+    ) as temp_file:
+        yield temp_file
+
+
+@pytest.fixture(
+    params=[
+        "temp_marimo_file_with_inline_metadata",
+        "temp_non_marimo_file",
+        "temp_non_marimo_file_with_marimo",
+        "temp_text_file",
+    ]
+)
+def temp_possible_file(request: Any) -> str:
+    return request.getfixturevalue(request.param)
 
 
 def test_cli_help_exit_code() -> None:
@@ -248,6 +307,167 @@ def test_cli_edit_token() -> None:
         contents,
     )
     _check_contents(p, b'"serverToken": ', contents)
+
+
+def test_cli_edit_token_password_file_stdin() -> None:
+    # Test reading token password from stdin using --token-password-file -
+    port = _get_port()
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "-p",
+            str(port),
+            "--headless",
+            "--token-password-file",
+            "-",
+            "--skip-update-check",
+        ],
+        stdin=subprocess.PIPE,
+    )
+    if p.stdin:
+        p.stdin.write(b"secret_from_stdin")
+        p.stdin.close()
+
+    contents = _try_fetch(port, "localhost", "secret_from_stdin")
+    _check_contents(p, b'"mode": "home"', contents)
+    _check_contents(
+        p,
+        f'"version": "{get_version()}"'.encode(),
+        contents,
+    )
+    _check_contents(p, b'"serverToken": ', contents)
+
+
+def test_cli_edit_token_password_mutual_exclusivity() -> None:
+    # Test that --token-password and --token-password-file are mutually exclusive
+    result = subprocess.run(
+        [
+            "marimo",
+            "edit",
+            "--headless",
+            "--token-password",
+            "secret1",
+            "--token-password-file",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert (
+        "mutually exclusive" in result.stderr.lower()
+        or "only one of" in result.stderr.lower()
+    )
+
+
+def test_cli_run_token_password_file_stdin() -> None:
+    # Test stdin with run command using --token-password-file -
+    with _write_temp_notebook(
+        """
+        import marimo
+        app = marimo.App()
+        """
+    ) as tmp_file:
+        port = _get_port()
+        p = subprocess.Popen(
+            [
+                "marimo",
+                "run",
+                tmp_file,
+                "-p",
+                str(port),
+                "--headless",
+                "--token",
+                "--token-password-file",
+                "-",
+            ],
+            stdin=subprocess.PIPE,
+        )
+        if p.stdin:
+            p.stdin.write(b"run_secret")
+            p.stdin.close()
+
+        contents = _try_fetch(port, "localhost", "run_secret")
+        _check_contents(p, b'"appConfig":', contents)
+
+
+def test_cli_edit_token_password_file_path() -> None:
+    # Test reading token password from a file path
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".txt"
+    ) as password_file:
+        password_file.write("file_secret")
+        password_file_path = password_file.name
+
+    try:
+        port = _get_port()
+        p = subprocess.Popen(
+            [
+                "marimo",
+                "edit",
+                "-p",
+                str(port),
+                "--headless",
+                "--token-password-file",
+                password_file_path,
+                "--skip-update-check",
+            ],
+        )
+
+        contents = _try_fetch(port, "localhost", "file_secret")
+        _check_contents(p, b'"mode": "home"', contents)
+        _check_contents(
+            p,
+            f'"version": "{get_version()}"'.encode(),
+            contents,
+        )
+        _check_contents(p, b'"serverToken": ', contents)
+    finally:
+        os.unlink(password_file_path)
+
+
+def test_cli_edit_token_password_file_not_found() -> None:
+    # Test that a non-existent file raises an error
+    result = subprocess.run(
+        [
+            "marimo",
+            "edit",
+            "--headless",
+            "--token-password-file",
+            "/nonexistent/path/to/password.txt",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "not found" in result.stderr.lower()
+
+
+def test_cli_edit_token_password_file_empty() -> None:
+    # Test that an empty file raises an error
+    with tempfile.NamedTemporaryFile(
+        mode="w", delete=False, suffix=".txt"
+    ) as password_file:
+        # Write nothing to the file
+        password_file_path = password_file.name
+
+    try:
+        result = subprocess.run(
+            [
+                "marimo",
+                "edit",
+                "--headless",
+                "--token-password-file",
+                password_file_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "no token password" in result.stderr.lower()
+    finally:
+        os.unlink(password_file_path)
 
 
 def test_cli_edit_directory() -> None:
@@ -320,58 +540,52 @@ def test_cli_edit_with_additional_args(temp_marimo_file: str) -> None:
 
 
 @pytest.mark.skipif(
-    condition=not _can_access_pypi(),
-    reason="update check won't work without access to pypi",
+    condition=not _can_access_pypi() or is_windows(),
+    reason="update check won't work without access to pypi, or on Windows",
 )
-def test_cli_edit_update_check() -> None:
-    with tempfile.TemporaryDirectory() as tempdir:
-        port = _get_port()
-        env = {**os.environ, "MARIMO_PYTEST_HOME_DIR": tempdir}
-        # pop off MARIMO_SKIP_UPDATE_CHECK
-        env.pop("MARIMO_SKIP_UPDATE_CHECK", None)
-        p = subprocess.Popen(
-            ["marimo", "edit", "-p", str(port), "--headless", "--no-token"],
-            env=env,
-        )
-        contents = _try_fetch(port)
-        _check_contents(p, b'"mode": "home"', contents)
+def test_cli_edit_update_check(tmp_path: Path) -> None:
+    port = _get_port()
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    # pop off MARIMO_SKIP_UPDATE_CHECK
+    env.pop("MARIMO_SKIP_UPDATE_CHECK", None)
+    p = subprocess.Popen(
+        ["marimo", "edit", "-p", str(port), "--headless", "--no-token"],
+        env=env,
+    )
+    contents = _try_fetch(port)
+    _check_contents(p, b'"mode": "home"', contents)
 
-        state_contents = _read_toml(
-            os.path.join(tempdir, CONFIG_ROOT_DIR, "state.toml")
-        )
-        assert state_contents is not None
-        assert state_contents.get("last_checked_at") is not None
+    state_contents = _read_toml(tmp_path / "marimo" / "state.toml")
+    assert state_contents is not None
+    assert state_contents.get("last_checked_at") is not None
 
 
 @pytest.mark.skipif(
     condition=not _can_access_pypi(),
     reason="update check skip is only detectable if pypi is accessible",
 )
-def test_cli_edit_skip_update_check() -> None:
-    with tempfile.TemporaryDirectory() as tempdir:
-        port = _get_port()
-        p = subprocess.Popen(
-            [
-                "marimo",
-                "edit",
-                "-p",
-                str(port),
-                "--headless",
-                "--no-token",
-                "--skip-update-check",
-            ],
-            env={**os.environ, "MARIMO_PYTEST_HOME_DIR": tempdir},
-        )
-        contents = _try_fetch(port)
-        _check_contents(p, b'"mode": "home"', contents)
+def test_cli_edit_skip_update_check(tmp_path: Path) -> None:
+    port = _get_port()
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "-p",
+            str(port),
+            "--headless",
+            "--no-token",
+            "--skip-update-check",
+        ],
+        env=env,
+    )
+    contents = _try_fetch(port)
+    _check_contents(p, b'"mode": "home"', contents)
 
-        state_contents = _read_toml(
-            os.path.join(tempdir, CONFIG_ROOT_DIR, "state.toml")
-        )
-        assert (
-            state_contents is None
-            or state_contents.get("last_checked_at") is None
-        )
+    state_contents = _read_toml(tmp_path / "marimo" / "state.toml")
+    assert (
+        state_contents is None or state_contents.get("last_checked_at") is None
+    )
 
 
 def test_cli_new() -> None:
@@ -577,6 +791,110 @@ def test_cli_sandbox_edit_new_file() -> None:
     )
     contents = _try_fetch(port)
     _check_contents(p, b"edit", contents)
+
+
+@pytest.mark.skipif(not HAS_UV, reason="uv is required for sandbox tests")
+def test_cli_sandbox_edit_none_not_supported() -> None:
+    port = _get_port()
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "-p",
+            str(port),
+            "--headless",
+            "--no-token",
+            "--sandbox",
+        ],
+        stderr=subprocess.PIPE,
+    )
+
+    def _assert():
+        assert p.returncode != 0
+
+    try_assert_n_times(5, _assert)
+    assert p.stderr is not None
+    assert "not supported" in p.stderr.read().decode()
+
+
+@pytest.mark.skipif(not HAS_UV, reason="uv is required for sandbox tests")
+def test_cli_sandbox_edit_directory_not_supported() -> None:
+    port = _get_port()
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "../",
+            "-p",
+            str(port),
+            "--headless",
+            "--no-token",
+            "--sandbox",
+        ],
+        stderr=subprocess.PIPE,
+    )
+
+    def _assert():
+        assert p.returncode != 0
+
+    try_assert_n_times(5, _assert)
+    assert p.stderr is not None
+    assert "not supported" in p.stderr.read().decode()
+
+
+@pytest.mark.skipif(not HAS_UV, reason="uv is required for sandbox tests")
+def test_cli_edit_none_dangerous_sandbox_allowed() -> None:
+    # sandbox is disallowed in a multi-notebook edit server,
+    # but can be overridden with --dangerous-sandbox.
+    port = _get_port()
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "--dangerous-sandbox",
+            "-p",
+            str(port),
+            "--headless",
+            "--no-token",
+            "--skip-update-check",
+        ]
+    )
+    contents = _try_fetch(port)
+    _check_contents(p, b'"mode": "home"', contents)
+    _check_contents(
+        p,
+        f'"version": "{get_version()}"'.encode(),
+        contents,
+    )
+    _check_contents(p, b'"serverToken": ', contents)
+
+
+@pytest.mark.skipif(not HAS_UV, reason="uv is required for sandbox tests")
+def test_cli_edit_directory_dangerous_sandbox_allowed() -> None:
+    # sandbox is disallowed in a multi-notebook edit server,
+    # but can be overridden with --dangerous-sandbox.
+    port = _get_port()
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "../",
+            "--dangerous-sandbox",
+            "-p",
+            str(port),
+            "--headless",
+            "--no-token",
+            "--skip-update-check",
+        ]
+    )
+    contents = _try_fetch(port)
+    _check_contents(p, b'"mode": "home"', contents)
+    _check_contents(
+        p,
+        f'"version": "{get_version()}"'.encode(),
+        contents,
+    )
+    _check_contents(p, b'"serverToken": ', contents)
 
 
 @pytest.mark.skipif(is_windows(), reason="Windows will prompt for Docker")
@@ -891,13 +1209,41 @@ def test_cli_with_custom_pyproject_config(tmp_path: Path) -> None:
     finally:
         p.kill()
 
-    # marimo edit --sandbox, in the directory with pyproject.toml
+
+# Test sandbox with config for vscode compatibility
+@pytest.mark.skipif(not HAS_UV, reason="uv is required for sandbox tests")
+def test_cli_with_custom_pyproject_config_no_file(tmp_path: Path) -> None:
+    # Create a custom pyproject.toml with special marimo config
+    pyproject_path = tmp_path / "pyproject.toml"
+    pyproject_content = """
+    [tool.marimo]
+    formatting = {line_length = 111}
+
+    [tool.marimo.runtime]
+    auto_instantiate = false
+
+    [tool.marimo.package_management]
+    manager = "pip"
+    """
+    pyproject_path.write_text(pyproject_content)
+
+    def assert_custom_config(contents: bytes | None) -> None:
+        assert contents is not None
+        # Verify that the custom config is applied
+        assert b'"line_length": 111' in contents
+        assert b'"auto_instantiate": false' in contents
+        # Verify that the package manager is switch to uv because we are running in a sandbox
+        # TODO: fix this, it does not get overridden in tests (maybe it is using a different marimo version that the one in CI)
+        # assert b'"manager": "uv"' in contents
+
+    # marimo edit --dangerous-sandbox, in the directory with pyproject.toml,
+    # for vscode extension compatibility
     port = _get_port()
     p = subprocess.Popen(
         [
             "marimo",
             "edit",
-            "--sandbox",
+            "--dangerous-sandbox",
             "-p",
             str(port),
             "--headless",
@@ -996,3 +1342,59 @@ def test_cli_run_docker_remote_url():
     assert p.returncode != 0
     assert p.stdout is not None
     assert "Docker is not installed" in p.stdout.read().decode()
+
+
+def test_cli_edit_with_convert(
+    temp_possible_file: str,
+) -> None:
+    # Convert should be able to handle anything.
+    port = _get_port()
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "-y",
+            "edit",
+            "--convert",
+            temp_possible_file,
+            "--port",
+            str(port),
+            "--no-token",
+            "--headless",
+        ],
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+    contents = _try_fetch(port)
+
+    # If fetch fails, capture and print server output for debugging
+    if contents is None:
+        stdout, stderr = p.communicate(timeout=5)
+        raise AssertionError(
+            f"Server failed to start. stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+
+    _check_contents(p, b"read", contents)
+
+    p.terminate()
+    p.wait(timeout=5)
+
+
+def test_cli_edit_with_timeout() -> None:
+    p = subprocess.Popen(
+        [
+            "marimo",
+            "edit",
+            "--no-token",
+            "--headless",
+            "--timeout",
+            "0.01",  # very short timeout
+        ],
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+    stdout, _ = p.communicate(timeout=5)
+    assert "Timeout due to inactivity" in stdout

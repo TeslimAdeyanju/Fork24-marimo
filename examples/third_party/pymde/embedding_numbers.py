@@ -4,33 +4,32 @@
 #     "pymde==0.1.18",
 # ]
 # ///
+
 import marimo
 
-__generated_with = "0.8.0"
+__generated_with = "0.17.2"
 app = marimo.App()
 
 
 @app.cell
-def __(mo):
-    mo.md(
-        """
-        # Embedding MNIST
+def _(mo):
+    mo.md("""
+    # Embedding MNIST
 
-        This app shows how to use the function `pymde.preserve_neighbors`
-        to produce embeddings that highlight the local structure of your
-        data, using MNIST as a case study. In these embeddings similar
-        digits are near each other, and dissimilar digits are not near each other.
+    This app shows how to use the function `pymde.preserve_neighbors`
+    to produce embeddings that highlight the local structure of your
+    data, using MNIST as a case study. In these embeddings similar
+    digits are near each other, and dissimilar digits are not near each other.
 
-        ## Data
-        The data we'll embed are 70,000 28x28 grayscale images of handwritten
-        digits:
-        """
-    )
+    ## Data
+    The data we'll embed are 70,000 28x28 grayscale images of handwritten
+    digits:
+    """)
     return
 
 
 @app.cell
-def __(button, show_random_images):
+def _(button, show_random_images):
     button
 
     show_random_images(5)
@@ -38,14 +37,14 @@ def __(button, show_random_images):
 
 
 @app.cell
-def __(mo):
+def _(mo):
     button = mo.ui.button(label="Click this button")
     mo.md(f"{button} _to view another random sample of images._").center()
-    return button,
+    return (button,)
 
 
 @app.cell
-def __(mo):
+def _(mo):
     params = (
         mo.md(
             """
@@ -67,11 +66,11 @@ def __(mo):
     )
 
     params
-    return params,
+    return (params,)
 
 
 @app.cell
-def __(params):
+def _(params):
     if params.value is not None:
         embedding_dimension, constraint_type = (
             params.value["embedding_dimension"],
@@ -83,7 +82,7 @@ def __(params):
 
 
 @app.cell
-def __(constraint_type, pymde):
+def _(constraint_type, pymde):
     if constraint_type is not None:
         _constraints = {
             "Centered": pymde.Centered(),
@@ -91,18 +90,11 @@ def __(constraint_type, pymde):
         }
 
         constraint = _constraints[constraint_type]
-    return constraint,
+    return (constraint,)
 
 
 @app.cell
-def __(
-    compute_embedding,
-    constraint,
-    embedding_dimension,
-    mnist,
-    plt,
-    pymde,
-):
+def _(compute_embedding, constraint, embedding_dimension, mnist, plt, pymde):
     def show_embedding():
         _, embedding = compute_embedding(embedding_dimension, constraint)
         pymde.plot(embedding, color_by=mnist.attributes["digits"])
@@ -110,11 +102,11 @@ def __(
         return plt.gca()
 
     show_embedding() if embedding_dimension is not None else None
-    return show_embedding,
+    return
 
 
 @app.cell
-def __(mnist, mo, pymde, torch):
+def _(mnist, mo, pymde, torch):
     embedding_cache = {}
 
 
@@ -137,17 +129,17 @@ def __(mnist, mo, pymde, torch):
         value = (mde, X)
         embedding_cache[key] = value
         return value
-    return compute_embedding, embedding_cache
+    return (compute_embedding,)
 
 
 @app.cell
-def __(pymde):
+def _(pymde):
     mnist = pymde.datasets.MNIST()
-    return mnist,
+    return (mnist,)
 
 
 @app.cell
-def __(mnist, plt, torch):
+def _(mnist, plt, torch):
     def show_random_images(n_images):
         indices = torch.randperm(mnist.data.shape[0])[:n_images]
         images = mnist.data[indices].reshape((-1, 28, 28))
@@ -159,11 +151,11 @@ def __(mnist, plt, torch):
             ax.set_xticks([])
         plt.tight_layout()
         return fig
-    return show_random_images,
+    return (show_random_images,)
 
 
 @app.cell
-def __():
+def _():
     import matplotlib.pyplot as plt
     import pymde
     import torch

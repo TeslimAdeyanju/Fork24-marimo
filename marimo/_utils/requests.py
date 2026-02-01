@@ -1,11 +1,13 @@
 # Copyright 2025 Marimo. All rights reserved.
+from __future__ import annotations
+
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Optional, Union
 
-from marimo import __version__
+from marimo._version import __version__
 
 # Utility functions for making HTTP requests,
 # without using the requests library or any other external dependencies.
@@ -49,10 +51,16 @@ class Response:
 
         This assumes the response is UTF-8 encoded.
         In future, we can infer the encoding from the headers.
-        """
-        return self.content.decode("utf-8")
 
-    def raise_for_status(self) -> "Response":
+        Line endings are normalized to Unix style (\n) to match Python's
+        text mode behavior when reading files.
+        """
+        decoded = self.content.decode("utf-8")
+        # Normalize line endings: \r\n -> \n, \r -> \n
+        # This matches Python's universal newline mode used by Path.read_text()
+        return decoded.replace("\r\n", "\n").replace("\r", "\n")
+
+    def raise_for_status(self) -> Response:
         """Raise an exception for non-2xx status codes.
 
         Returns:

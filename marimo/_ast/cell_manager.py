@@ -2,23 +2,18 @@
 from __future__ import annotations
 
 import os
-import random
-import string
-import sys
 from typing import (
     TYPE_CHECKING,
     Callable,
     Optional,
+    ParamSpec,
+    TypeAlias,
     TypeVar,
 )
 
-if sys.version_info < (3, 10):
-    from typing_extensions import ParamSpec, TypeAlias
-else:
-    from typing import ParamSpec, TypeAlias
-
 from marimo import _loggers
 from marimo._ast.cell import Cell, CellConfig
+from marimo._ast.cell_id import CellIdGenerator
 from marimo._ast.compiler import (
     cell_factory,
     context_cell_factory,
@@ -33,6 +28,7 @@ from marimo._schemas.serialization import (
     SetupCell,
 )
 from marimo._types.ids import CellId_t
+from marimo._utils.cell_matching import match_cell_ids_by_similarity
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -44,37 +40,9 @@ P = ParamSpec("P")
 R = TypeVar("R")
 Fn: TypeAlias = Callable[P, R]
 Cls: TypeAlias = type
-Obj: TypeAlias = "Cls | Fn[P, R]"
+Obj: TypeAlias = Cls | Fn[P, R]
 
 LOGGER = _loggers.marimo_logger()
-
-
-class CellIdGenerator:
-    def __init__(self, prefix: str = "") -> None:
-        self.prefix = prefix
-        self.random_seed = random.Random(42)
-        self.seen_ids: set[CellId_t] = set()
-
-    def create_cell_id(self) -> CellId_t:
-        """Create a new unique cell ID.
-
-        Returns:
-            CellId_t: A new cell ID consisting of the manager's prefix followed by 4 random letters.
-        """
-        attempts = 0
-        while attempts < 100:
-            # 4 random letters
-            _id = self.prefix + "".join(
-                self.random_seed.choices(string.ascii_letters, k=4)
-            )
-            if _id not in self.seen_ids:
-                self.seen_ids.add(CellId_t(_id))
-                return CellId_t(_id)
-            attempts += 1
-
-        raise ValueError(
-            f"Failed to create a unique cell ID after {attempts} attempts"
-        )
 
 
 class CellManager:
@@ -192,6 +160,7 @@ class CellManager:
         self,
         frame: FrameType,
         app: InternalApp | None = None,
+        config: Optional[CellConfig] = None,
     ) -> Cell:
         """Registers cells when called through a context block."""
         cell = context_cell_factory(
@@ -199,7 +168,7 @@ class CellManager:
             # NB. carry along the frame from the initial call.
             frame=frame,
         )
-        cell._cell.configure(CellConfig())
+        cell._cell.configure(config or CellConfig())
         self._register_cell(cell, app=app)
         return cell
 
@@ -254,10 +223,25 @@ class CellManager:
             cell_id = CellId_t(SETUP_CELL_NAME)
         else:
             cell_id = self.create_cell_id()
-        cell = ir_cell_factory(cell_def, cell_id=cell_id)
+        filename = app.filename if app is not None else None
         cell_config = CellConfig.from_dict(
             cell_def.options,
         )
+
+        try:
+            cell = ir_cell_factory(
+                cell_def, cell_id=cell_id, filename=filename
+            )
+        except SyntaxError:
+            self.unparsable = True
+            self.register_cell(
+                cell_id=cell_id,
+                code=cell_def.code,
+                config=cell_config,
+                name=cell_def.name,
+                cell=None,
+            )
+            return
         cell._cell.configure(cell_config)
         self._register_cell(cell, app=app)
 
@@ -345,6 +329,17 @@ class CellManager:
         """
         for cell_data in self._cell_data.values():
             yield cell_data.code
+
+    def code_lookup(self) -> dict[CellId_t, str]:
+        """Get a dict for cell codes.
+
+        Returns:
+            dict[CellId_t, str]: Dictionary mapping cell to their source code
+        """
+        return {
+            cell_id: cell_data.code
+            for cell_id, cell_data in self._cell_data.items()
+        }
 
     def configs(self) -> Iterable[CellConfig]:
         """Get an iterator over all cell configurations.
@@ -502,17 +497,10 @@ class CellManager:
 
         This mutates the current cell manager.
         """
-        prev_ids = list(prev_cell_manager.cell_ids())
-        prev_codes = [data.code for data in prev_cell_manager.cell_data()]
-        current_ids = list(self._cell_data.keys())
-        current_codes = [data.code for data in self.cell_data()]
-        sorted_ids = _match_cell_ids_by_similarity(
-            prev_ids, prev_codes, current_ids, current_codes
-        )
-        assert len(sorted_ids) == len(list(self.cell_ids()))
-
+        prev_codes = prev_cell_manager.code_lookup()
+        current_codes = self.code_lookup()
         # Create mapping from new to old ids
-        id_mapping = dict(zip(sorted_ids, current_ids))
+        id_mapping = match_cell_ids_by_similarity(prev_codes, current_codes)
 
         # Update the cell data in place
         new_cell_data: dict[CellId_t, CellData] = {}
@@ -524,131 +512,9 @@ class CellManager:
         self._cell_data = new_cell_data
 
         # Add the new ids to the set, so we don't reuse them in the future
-        for _id in sorted_ids:
+        for _id in id_mapping.keys():
             self._cell_id_generator.seen_ids.add(_id)
 
     @property
     def seen_ids(self) -> set[CellId_t]:
         return self._cell_id_generator.seen_ids
-
-
-def _match_cell_ids_by_similarity(
-    prev_ids: list[CellId_t],
-    prev_codes: list[str],
-    next_ids: list[CellId_t],
-    next_codes: list[str],
-) -> list[CellId_t]:
-    """Match cell IDs based on code similarity.
-
-    Args:
-        prev_ids: List of previous cell IDs, used as the set of possible IDs
-        prev_codes: List of previous cell codes
-        next_ids: List of next cell IDs, used only when more cells than prev_ids
-        next_codes: List of next cell codes
-
-    Returns:
-        List of cell IDs matching next_codes, using prev_ids where possible
-    """
-    assert len(prev_codes) == len(prev_ids)
-    assert len(next_codes) == len(next_ids)
-
-    # Initialize result and tracking sets
-    result: list[Optional[CellId_t]] = [None] * len(next_codes)
-    used_positions: set[int] = set()
-    used_prev_ids: set[CellId_t] = set()
-
-    # Track which next_ids are new (not in prev_ids)
-    new_next_ids = [p_id for p_id in next_ids if p_id not in prev_ids]
-    new_id_idx = 0
-
-    # First pass: exact matches using hash map
-    next_code_to_idx: dict[str, list[int]] = {}
-    for idx, code in enumerate(next_codes):
-        next_code_to_idx.setdefault(code, []).append(idx)
-
-    for prev_idx, prev_code in enumerate(prev_codes):
-        if prev_ids[prev_idx] in used_prev_ids:
-            continue
-        if prev_code in next_code_to_idx:
-            # Use first available matching position
-            for next_idx in next_code_to_idx[prev_code]:
-                if next_idx not in used_positions:
-                    result[next_idx] = prev_ids[prev_idx]
-                    used_positions.add(next_idx)
-                    used_prev_ids.add(prev_ids[prev_idx])
-                    break
-
-    # If all positions filled, we're done
-    if len(used_positions) == len(next_codes):
-        return [_id for _id in result if _id is not None]  # type: ignore
-
-    def similarity_score(s1: str, s2: str) -> int:
-        """Fast similarity score based on common prefix and suffix.
-        Returns lower score for more similar strings."""
-        # Find common prefix length
-        prefix_len = 0
-        for c1, c2 in zip(s1, s2):
-            if c1 != c2:
-                break
-            prefix_len += 1
-
-        # Find common suffix length if strings differ in middle
-        if prefix_len < min(len(s1), len(s2)):
-            s1_rev = s1[::-1]
-            s2_rev = s2[::-1]
-            suffix_len = 0
-            for c1, c2 in zip(s1_rev, s2_rev):
-                if c1 != c2:
-                    break
-                suffix_len += 1
-        else:
-            suffix_len = 0
-
-        # Return inverse similarity - shorter common affix means higher score
-        return len(s1) + len(s2) - 2 * (prefix_len + suffix_len)
-
-    # Filter out used positions and ids for similarity matrix
-    remaining_prev_indices = [
-        i for i, pid in enumerate(prev_ids) if pid not in used_prev_ids
-    ]
-    remaining_next_indices = [
-        i for i in range(len(next_codes)) if i not in used_positions
-    ]
-
-    # Create similarity matrix only for remaining cells
-    similarity_matrix: list[list[int]] = []
-    for prev_idx in remaining_prev_indices:
-        row: list[int] = []
-        for next_idx in remaining_next_indices:
-            score = similarity_score(
-                prev_codes[prev_idx], next_codes[next_idx]
-            )
-            row.append(score)
-        similarity_matrix.append(row)
-
-    # Second pass: best matches for remaining positions
-    for matrix_prev_idx, prev_idx in enumerate(remaining_prev_indices):
-        # Find best match among unused positions
-        min_score = float("inf")  # type: ignore
-        best_next_matrix_idx = None
-        for matrix_next_idx, score in enumerate(
-            similarity_matrix[matrix_prev_idx]
-        ):
-            if score < min_score:
-                min_score = score
-                best_next_matrix_idx = matrix_next_idx
-
-        if best_next_matrix_idx is not None:
-            next_idx = remaining_next_indices[best_next_matrix_idx]
-            result[next_idx] = prev_ids[prev_idx]
-            used_positions.add(next_idx)
-            used_prev_ids.add(prev_ids[prev_idx])
-
-    # Fill remaining positions with new next_ids
-    for i in range(len(next_codes)):
-        if result[i] is None:
-            if new_id_idx < len(new_next_ids):
-                result[i] = new_next_ids[new_id_idx]
-                new_id_idx += 1
-
-    return [_id for _id in result if _id is not None]  # type: ignore

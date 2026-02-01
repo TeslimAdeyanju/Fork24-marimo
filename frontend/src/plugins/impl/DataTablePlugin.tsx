@@ -37,6 +37,10 @@ import { usePanelOwnership } from "@/components/data-table/hooks/use-panel-owner
 import { LoadingTable } from "@/components/data-table/loading-table";
 import { RowViewerPanel } from "@/components/data-table/row-viewer-panel/row-viewer";
 import {
+  type DownloadAsArgs,
+  DownloadAsSchema,
+} from "@/components/data-table/schemas";
+import {
   type BinValues,
   type ColumnHeaderStats,
   type ColumnName,
@@ -47,13 +51,15 @@ import {
   toFieldTypes,
   type ValueCounts,
 } from "@/components/data-table/types";
-import { loadTableData } from "@/components/data-table/utils";
+import {
+  getPageIndexForRow,
+  loadTableData,
+} from "@/components/data-table/utils";
 import { ContextAwarePanelItem } from "@/components/editor/chrome/panels/context-aware-panel/context-aware-panel";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DelayMount } from "@/components/utils/delay-mount";
 import { type CellId, findCellId } from "@/core/cells/ids";
-import { getFeatureFlag } from "@/core/config/feature-flag";
 import { slotsController } from "@/core/slots/slots";
 import { store } from "@/core/state/jotai";
 import { isStaticNotebook } from "@/core/static/static-state";
@@ -81,15 +87,12 @@ import {
 type CsvURL = string;
 export type TableData<T> = T[] | CsvURL;
 
-interface ColumnSummariesArgs {
-  precompute: boolean;
-}
-
 interface ColumnSummaries<T = unknown> {
   data: TableData<T> | null | undefined;
   stats: Record<ColumnName, ColumnHeaderStats>;
   bin_values: Record<ColumnName, BinValues>;
   value_counts: Record<ColumnName, ValueCounts>;
+  show_charts: boolean;
   is_disabled?: boolean;
 }
 
@@ -108,7 +111,7 @@ export type CalculateTopKRows = (req: {
   column: string;
   k: number;
 }) => Promise<{
-  data: Array<[unknown, number]>;
+  data: [unknown, number][];
 }>;
 
 export type PreviewColumn = (opts: { column: string }) => Promise<{
@@ -168,6 +171,7 @@ interface Data<T> {
   totalRows: number | TooManyRows;
   pagination: boolean;
   pageSize: number;
+  maxHeight?: number;
   selection: DataTableSelection;
   showDownload: boolean;
   showFilters: boolean;
@@ -182,23 +186,23 @@ interface Data<T> {
   freezeColumnsRight?: string[];
   textJustifyColumns?: Record<string, "left" | "center" | "right">;
   wrappedColumns?: string[];
+  headerTooltip?: Record<string, string>;
   totalColumns: number;
   maxColumns: number | "all";
   hasStableRowId: boolean;
   lazy: boolean;
+  cellHoverTexts?: Record<string, Record<string, string | null>> | null;
 }
 
 // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 type DataTableFunctions = {
-  download_as: (req: { format: "csv" | "json" | "parquet" }) => Promise<string>;
-  get_column_summaries: <T>(
-    opts: ColumnSummariesArgs,
-  ) => Promise<ColumnSummaries<T>>;
+  download_as: DownloadAsArgs;
+  get_column_summaries: <T>(opts: {}) => Promise<ColumnSummaries<T>>;
   search: <T>(req: {
     sort?: {
       by: string;
       descending: boolean;
-    };
+    }[];
     query?: string;
     filters?: ConditionType[];
     page_number: number;
@@ -208,6 +212,7 @@ type DataTableFunctions = {
     data: TableData<T>;
     total_rows: number | TooManyRows;
     cell_styles?: CellStyleState | null;
+    cell_hover_texts?: Record<string, Record<string, string | null>> | null;
   }>;
   get_data_url?: GetDataUrl;
   get_row_ids?: GetRowIds;
@@ -215,7 +220,11 @@ type DataTableFunctions = {
   preview_column?: PreviewColumn;
 };
 
-type S = Array<number | string | { rowId: string; columnName?: string }>;
+type S = (number | string | { rowId: string; columnName?: string })[];
+
+const cellHoverTextSchema = z
+  .record(z.string(), z.record(z.string(), z.string().nullable()))
+  .optional();
 
 export const DataTablePlugin = createPlugin<S>("marimo-table")
   .withData(
@@ -246,14 +255,20 @@ export const DataTablePlugin = createPlugin<S>("marimo-table")
       freezeColumnsLeft: z.array(z.string()).optional(),
       freezeColumnsRight: z.array(z.string()).optional(),
       textJustifyColumns: z
-        .record(z.enum(["left", "center", "right"]))
+        .record(z.string(), z.enum(["left", "center", "right"]))
         .optional(),
       wrappedColumns: z.array(z.string()).optional(),
+      headerTooltip: z.record(z.string(), z.string()).optional(),
       fieldTypes: columnToFieldTypesSchema.nullish(),
       totalColumns: z.number(),
       maxColumns: z.union([z.number(), z.literal("all")]).default("all"),
       hasStableRowId: z.boolean().default(false),
-      cellStyles: z.record(z.record(z.object({}).passthrough())).optional(),
+      maxHeight: z.number().optional(),
+      cellStyles: z
+        .record(z.string(), z.record(z.string(), z.object({}).passthrough()))
+        .optional(),
+      hoverTemplate: z.string().optional(),
+      cellHoverTexts: cellHoverTextSchema,
       // Whether to load the data lazily.
       lazy: z.boolean().default(false),
       // If lazy, this will preload the first page of data
@@ -262,27 +277,27 @@ export const DataTablePlugin = createPlugin<S>("marimo-table")
     }),
   )
   .withFunctions<DataTableFunctions>({
-    download_as: rpc
-      .input(z.object({ format: z.enum(["csv", "json", "parquet"]) }))
-      .output(z.string()),
-    get_column_summaries: rpc
-      .input(z.object({ precompute: z.boolean() }))
-      .output(
-        z.object({
-          data: z
-            .union([z.string(), z.array(z.object({}).passthrough())])
-            .nullable(),
-          stats: z.record(z.string(), columnStats),
-          bin_values: z.record(z.string(), binValues),
-          value_counts: z.record(z.string(), valueCounts),
-          is_disabled: z.boolean().optional(),
-        }),
-      ),
+    download_as: DownloadAsSchema,
+    get_column_summaries: rpc.input(z.looseObject({})).output(
+      z.object({
+        data: z.union([z.string(), z.array(z.looseObject({}))]).nullable(),
+        stats: z.record(z.string(), columnStats),
+        bin_values: z.record(z.string(), binValues),
+        value_counts: z.record(z.string(), valueCounts),
+        show_charts: z.boolean(),
+        is_disabled: z.boolean().optional(),
+      }),
+    ),
     search: rpc
       .input(
         z.object({
           sort: z
-            .object({ by: z.string(), descending: z.boolean() })
+            .array(
+              z.object({
+                by: z.string(),
+                descending: z.boolean(),
+              }),
+            )
             .optional(),
           query: z.string().optional(),
           filters: z.array(ConditionSchema).optional(),
@@ -296,8 +311,12 @@ export const DataTablePlugin = createPlugin<S>("marimo-table")
           data: z.union([z.string(), z.array(z.object({}).passthrough())]),
           total_rows: z.union([z.number(), z.literal(TOO_MANY_ROWS)]),
           cell_styles: z
-            .record(z.record(z.object({}).passthrough()))
+            .record(
+              z.string(),
+              z.record(z.string(), z.object({}).passthrough()),
+            )
             .nullable(),
+          cell_hover_texts: cellHoverTextSchema.nullable(),
         }),
       ),
     get_row_ids: rpc.input(z.object({}).passthrough()).output(
@@ -345,6 +364,7 @@ export const DataTablePlugin = createPlugin<S>("marimo-table")
             data={props.data.data}
             value={props.value}
             setValue={props.setValue}
+            cellHoverTexts={props.data.cellHoverTexts}
           />
         </LazyDataTableComponent>
       </TableProviders>
@@ -385,6 +405,8 @@ interface DataTableProps<T> extends Data<T>, DataTableFunctions {
   // Filters
   enableFilters?: boolean;
   cellStyles?: CellStyleState | null;
+  hoverTemplate?: string | null;
+  cellHoverTexts?: Record<string, Record<string, string | null>> | null;
   toggleDisplayHeader?: () => void;
   host: HTMLElement;
   cellId?: CellId | null;
@@ -453,6 +475,7 @@ export const LoadingDataTableComponent = memo(
       rows: T[];
       totalRows: number | TooManyRows;
       cellStyles: CellStyleState | undefined | null;
+      cellHoverTexts?: Record<string, Record<string, string | null>> | null;
     }>(async () => {
       // If there is no data, return an empty array
       if (props.totalRows === 0) {
@@ -463,6 +486,7 @@ export const LoadingDataTableComponent = memo(
       let tableData = props.data;
       let totalRows = props.totalRows;
       let cellStyles = props.cellStyles;
+      let cellHoverTexts = props.cellHoverTexts;
 
       const pageSizeChanged = paginationState.pageSize !== props.pageSize;
 
@@ -476,19 +500,15 @@ export const LoadingDataTableComponent = memo(
         !props.lazy &&
         !pageSizeChanged;
 
-      if (sorting.length > 1) {
-        Logger.warn("Multiple sort columns are not supported");
-      }
+      // Convert sorting state to API format
+      const sortArgs =
+        sorting.length > 0
+          ? sorting.map((s) => ({ by: s.id, descending: s.desc }))
+          : undefined;
 
       // If we have sort/search/filter, use the search function
       const searchResultsPromise = search<T>({
-        sort:
-          sorting.length > 0
-            ? {
-                by: sorting[0].id,
-                descending: sorting[0].desc,
-              }
-            : undefined,
+        sort: sortArgs,
         query: searchQuery,
         page_number: paginationState.pageIndex,
         page_size: paginationState.pageSize,
@@ -513,12 +533,14 @@ export const LoadingDataTableComponent = memo(
         tableData = searchResults.data;
         totalRows = searchResults.total_rows;
         cellStyles = searchResults.cell_styles || {};
+        cellHoverTexts = searchResults.cell_hover_texts || {};
       }
       tableData = await loadTableData(tableData);
       return {
         rows: tableData,
         totalRows: totalRows,
         cellStyles,
+        cellHoverTexts,
       };
     }, [
       sorting,
@@ -529,22 +551,22 @@ export const LoadingDataTableComponent = memo(
       props.data,
       props.totalRows,
       props.lazy,
+      props.cellHoverTexts,
       paginationState.pageSize,
       paginationState.pageIndex,
     ]);
 
     const getRow = useCallback(
       async (rowId: number) => {
+        const sortArgs =
+          sorting.length > 0
+            ? sorting.map((s) => ({ by: s.id, descending: s.desc }))
+            : undefined;
+
         const result = await search<T>({
           page_number: rowId,
           page_size: 1,
-          sort:
-            sorting.length > 0
-              ? {
-                  by: sorting[0].id,
-                  descending: sorting[0].desc,
-                }
-              : undefined,
+          sort: sortArgs,
           query: searchQuery,
           filters: filters.flatMap((filter) => {
             return filterToFilterCondition(
@@ -570,8 +592,6 @@ export const LoadingDataTableComponent = memo(
       );
     }, [data?.totalRows]);
 
-    const precompute = getFeatureFlag("performant_table_charts");
-
     // Column summaries
     const { data: columnSummaries, error: columnSummariesError } = useAsyncData<
       ColumnSummaries<T>
@@ -579,9 +599,15 @@ export const LoadingDataTableComponent = memo(
       // TODO: props.get_column_summaries is always true,
       // so we are unable to detect if the function is registered
       if (props.totalRows === 0 || !props.showColumnSummaries) {
-        return { data: null, stats: {}, bin_values: {}, value_counts: {} };
+        return {
+          data: null,
+          stats: {},
+          bin_values: {},
+          value_counts: {},
+          show_charts: false,
+        };
       }
-      return props.get_column_summaries({ precompute });
+      return props.get_column_summaries({});
     }, [
       props.get_column_summaries,
       props.showColumnSummaries,
@@ -644,9 +670,16 @@ export const LoadingDataTableComponent = memo(
         paginationState={paginationState}
         setPaginationState={setPaginationState}
         cellStyles={data?.cellStyles ?? props.cellStyles}
+        cellHoverTexts={
+          (data?.cellHoverTexts ?? props.cellHoverTexts) as Record<
+            string,
+            Record<string, string | null>
+          > | null
+        }
         toggleDisplayHeader={toggleDisplayHeader}
         getRow={getRow}
         cellId={cellId}
+        maxHeight={props.maxHeight}
       />
     );
 
@@ -656,6 +689,7 @@ export const LoadingDataTableComponent = memo(
         {props.showChartBuilder ? (
           <TablePanel
             displayHeader={displayHeader}
+            data={data?.rows || []}
             dataTable={dataTable}
             getDataUrl={props.get_data_url}
             fieldTypes={props.fieldTypes}
@@ -704,14 +738,18 @@ const DataTableComponent = ({
   freezeColumnsRight,
   textJustifyColumns,
   wrappedColumns,
+  headerTooltip,
   totalColumns,
   get_row_ids,
   cellStyles,
+  hoverTemplate,
+  cellHoverTexts,
   toggleDisplayHeader,
   calculate_top_k_rows,
   preview_column,
   getRow,
   cellId,
+  maxHeight,
 }: DataTableProps<unknown> &
   DataTableSearchProps & {
     data: unknown[];
@@ -730,6 +768,7 @@ const DataTableComponent = ({
       return ColumnChartSpecModel.EMPTY;
     }
     const fieldTypesWithoutExternalTypes = toFieldTypes(fieldTypes);
+
     return new ColumnChartSpecModel(
       columnSummaries.data || [],
       fieldTypesWithoutExternalTypes,
@@ -737,8 +776,7 @@ const DataTableComponent = ({
       columnSummaries.bin_values,
       columnSummaries.value_counts,
       {
-        includeCharts: Boolean(columnSummaries.data),
-        usePreComputedValues: getFeatureFlag("performant_table_charts"),
+        includeCharts: columnSummaries.show_charts,
       },
     );
   }, [fieldTypes, columnSummaries]);
@@ -775,6 +813,7 @@ const DataTableComponent = ({
         fieldTypes: memoizedClampedFieldTypes,
         textJustifyColumns: memoizedTextJustifyColumns,
         wrappedColumns: memoizedWrappedColumns,
+        headerTooltip: headerTooltip,
         // Only show data types if they are explicitly set
         showDataTypes: showDataTypes,
         calculateTopKRows: calculate_top_k_rows,
@@ -787,6 +826,7 @@ const DataTableComponent = ({
       memoizedClampedFieldTypes,
       memoizedTextJustifyColumns,
       memoizedWrappedColumns,
+      headerTooltip,
       calculate_top_k_rows,
     ],
   );
@@ -809,6 +849,30 @@ const DataTableComponent = ({
       }
     },
   );
+
+  const setViewedRow = useEvent((rowIdx: number) => {
+    setViewedRowIdx(rowIdx);
+
+    const outOfBounds =
+      rowIdx < 0 || (typeof totalRows === "number" && rowIdx >= totalRows);
+    if (outOfBounds || totalRows === TOO_MANY_ROWS) {
+      return;
+    }
+
+    // If the rowIdx moves to the next / previous page, update the pagination state
+    const newPageIndex = getPageIndexForRow(
+      rowIdx,
+      paginationState.pageIndex,
+      paginationState.pageSize,
+    );
+
+    if (newPageIndex !== null) {
+      setPaginationState((prev) => ({
+        ...prev,
+        pageIndex: newPageIndex,
+      }));
+    }
+  });
 
   const cellSelection = value.filter(
     (v) => v instanceof Object && v.columnName !== undefined,
@@ -865,7 +929,7 @@ const DataTableComponent = ({
             fieldTypes={memoizedUnclampedFieldTypes}
             totalRows={totalRows}
             rowIdx={viewedRowIdx}
-            setRowIdx={setViewedRowIdx}
+            setRowIdx={setViewedRow}
             isSelectable={isSelectable}
             isRowSelected={rowSelection[viewedRowIdx]}
             handleRowSelectionChange={handleRowSelectionChange}
@@ -890,6 +954,7 @@ const DataTableComponent = ({
             data={data}
             columns={columns}
             className={className}
+            maxHeight={maxHeight}
             sorting={sorting}
             totalRows={totalRows}
             totalColumns={totalColumns}
@@ -903,6 +968,8 @@ const DataTableComponent = ({
             rowSelection={rowSelection}
             cellSelection={cellSelection}
             cellStyling={cellStyles}
+            hoverTemplate={hoverTemplate}
+            cellHoverTexts={cellHoverTexts}
             downloadAs={showDownload ? downloadAs : undefined}
             enableSearch={enableSearch}
             searchQuery={searchQuery}

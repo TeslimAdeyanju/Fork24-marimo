@@ -9,12 +9,12 @@
 
 import marimo
 
-__generated_with = "0.9.4"
+__generated_with = "0.17.4"
 app = marimo.App(width="medium")
 
 
 @app.cell
-def __():
+def _():
     from mlx_lm import load, generate
     from pathlib import Path
     import marimo as mo
@@ -23,29 +23,27 @@ def __():
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        r"""
-        # Using MLX with Marimo
+def _(mo):
+    mo.md(r"""
+    # Using MLX with Marimo
 
-        ## Chat Example
-        This example shows how to use [`mo.ui.chat`](https://docs.marimo.io/api/inputs/chat.html#marimo.ui.chat) to make a chatbot backed by Apple's MLX, using the `mlx_lm` library and marimo.
-        [`mlx_lm`](https://github.com/ml-explore/mlx-examples/tree/main/llm) is a library for running large language models on Apple Silicon.
-        [`mlx`](https://github.com/ml-explore/mlx) is a framework for running machine learning models on Apple Silicon.
+    ## Chat Example
+    This example shows how to use [`mo.ui.chat`](https://docs.marimo.io/api/inputs/chat.html#marimo.ui.chat) to make a chatbot backed by Apple's MLX, using the `mlx_lm` library and marimo.
+    [`mlx_lm`](https://github.com/ml-explore/mlx-examples/tree/main/llm) is a library for running large language models on Apple Silicon.
+    [`mlx`](https://github.com/ml-explore/mlx) is a framework for running machine learning models on Apple Silicon.
 
-        Convert your own models to MLX, or find community-converted ones at various quantizations [here](https://huggingface.co/mlx-community).
+    Convert your own models to MLX, or find community-converted ones at various quantizations [here](https://huggingface.co/mlx-community).
 
-        ### Things you can do to improve this example:
-        - [`prompt caching`](https://github.com/ml-explore/mlx-examples/blob/main/llms/README.md#long-prompts-and-generations)
-        - completions / notebook mode
-        - assistant pre-fill
-        """
-    )
+    ### Things you can do to improve this example:
+    - [`prompt caching`](https://github.com/ml-explore/mlx-examples/blob/main/llms/README.md#long-prompts-and-generations)
+    - completions / notebook mode
+    - assistant pre-fill
+    """)
     return
 
 
 @app.cell
-def __(Path, snapshot_download):
+def _(Path, snapshot_download):
     def get_model_path(path_or_hf_repo: str) -> Path:
         """
         Ensures the model is available locally. If the path does not exist locally,
@@ -84,7 +82,7 @@ def __(Path, snapshot_download):
 
 
 @app.cell
-def __(mo):
+def _(mo):
     MODEL_ID = mo.ui.text(
         label="Hugging Face Model Repo or Local Path",
         value="mlx-community/Llama-3.2-3B-Instruct-bf16",
@@ -99,7 +97,7 @@ def __(mo):
 
 
 @app.cell
-def __(MODEL_ID, get_model_path, load, load_model_button, mo):
+def _(MODEL_ID, get_model_path, load, load_model_button, mo):
     mo.stop(not load_model_button.value, "Click 'Load Model' to proceed")
 
     try:
@@ -114,11 +112,11 @@ def __(MODEL_ID, get_model_path, load, load_model_button, mo):
     except Exception as e:
         mo.output.append(f"❌ Error loading model: {str(e)}")
         raise
-    return model, model_path, tokenizer
+    return model, tokenizer
 
 
 @app.cell(hide_code=True)
-def __(mo):
+def _(mo):
     # Create a text area for the system message
     system_message = mo.ui.text_area(
         value="You are a helpful AI assistant.",
@@ -132,7 +130,7 @@ def __(mo):
 
 
 @app.cell(hide_code=True)
-def __(mo):
+def _(mo):
     temp_slider = mo.ui.slider(
         start=0.0, stop=2.0, step=0.1, value=0.7, label="Temperature Slider"
     )
@@ -143,15 +141,7 @@ def __(mo):
 
 
 @app.cell
-def __(
-    generate,
-    max_tokens,
-    mo,
-    model,
-    system_message,
-    temp_slider,
-    tokenizer,
-):
+def _(generate, max_tokens, mo, model, system_message, temp_slider, tokenizer):
     def mlx_chat_model(messages, config):
         # Include the system message as the first message
         chat_messages = [{"role": "system", "content": system_message.value}]
@@ -197,17 +187,19 @@ def __(
 
     # Display the chatbot
     chatbot
-    return chatbot, mlx_chat_model
+    return (chatbot,)
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md("""Access the chatbot's historical messages with `chatbot.value`.""")
+def _(mo):
+    mo.md("""
+    Access the chatbot's historical messages with `chatbot.value`.
+    """)
     return
 
 
 @app.cell
-def __(chatbot):
+def _(chatbot):
     # Display the chat history
     chatbot.value
     return

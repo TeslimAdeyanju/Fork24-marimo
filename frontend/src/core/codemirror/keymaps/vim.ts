@@ -9,7 +9,7 @@ import {
   Vim,
 } from "@replit/codemirror-vim";
 import { resolvedMarimoConfigAtom } from "@/core/config/config";
-import { sendFileDetails } from "@/core/network/requests";
+import { getRequestClient } from "@/core/network/requests";
 import { store } from "@/core/state/jotai";
 import { onIdle } from "@/utils/idle";
 import { invariant } from "@/utils/invariant";
@@ -61,8 +61,9 @@ export function vimKeymapExtension(): Extension[] {
     keymap.of([
       {
         // Ctrl-[ by default is to dedent
-        // But for Vim (on Linux), it should exit insert mode when in Insert mode
+        // But for Vim (on Linux and Windows), it should exit insert mode when in Insert mode
         linux: "Ctrl-[",
+        win: "Ctrl-[",
         run: (ev) => {
           const cm = getCM(ev);
           if (!cm) {
@@ -84,31 +85,6 @@ export function vimKeymapExtension(): Extension[] {
         },
       },
     ]),
-    // Propagate Ctrl+[ to Escape for vim mode
-    EditorView.domEventHandlers({
-      keydown: (event, view) => {
-        if (
-          event.ctrlKey &&
-          event.key === "[" &&
-          !event.shiftKey &&
-          !event.altKey &&
-          !event.metaKey
-        ) {
-          event.preventDefault();
-          // Dispatch a synthetic Escape event to the editor
-          view.contentDOM.dispatchEvent(
-            new KeyboardEvent("keydown", {
-              key: "Escape",
-              code: "Escape",
-              bubbles: true,
-              cancelable: true,
-            }),
-          );
-          return true;
-        }
-        return false;
-      },
-    }),
     ViewPlugin.define((view) => {
       // Wait for the next animation frame so the CodeMirror instance is ready
       requestAnimationFrame(() => {
@@ -121,6 +97,18 @@ export function vimKeymapExtension(): Extension[] {
       };
     }),
     ViewPlugin.define((view) => new VimCursorVisibilityPlugin({ view })),
+    // FIXME: The vim extension swallows `Ctrl+Escape` events, preventing them
+    // from bubbling to parent elements where react-aria's useKeyboard is listening.
+    // Re-dispatch the event to ensure it propagates up for vim mode transitions.
+    EditorView.domEventHandlers({
+      keydown(event, view) {
+        if (event.ctrlKey && event.key === "Escape") {
+          view.dom.dispatchEvent(new KeyboardEvent(event.type, event));
+          return true;
+        }
+        return false;
+      },
+    }),
   ];
 }
 
@@ -148,10 +136,9 @@ const loadVimrcOnce = once(async () => {
   if (!vimrc) {
     return;
   }
-
   try {
     Logger.log(`Loading vimrc from ${vimrc}`);
-    const response = await sendFileDetails({ path: vimrc });
+    const response = await getRequestClient().sendFileDetails({ path: vimrc });
     const content = response.contents;
     if (!content) {
       Logger.error(`Failed to load vimrc from ${vimrc}`);

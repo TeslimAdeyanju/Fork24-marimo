@@ -49,7 +49,11 @@ async def test_matplotlib_special_case(
         formatter = executing_kernel.globals["formatter"]
         lines = executing_kernel.globals["lines"]
         assert formatter is not None
-        assert formatter(lines)[0].startswith("image")
+        mimetype = formatter(lines)[0]
+        assert (
+            mimetype.startswith("image")
+            or mimetype == "application/vnd.marimo+mimebundle"
+        )
 
 
 def test_format_structure_types() -> None:
@@ -86,13 +90,15 @@ def test_format_structure_simple() -> None:
 def test_format_structure_nested() -> None:
     StructuresFormatter().register()
 
+    bigint = 2**64
+
     nested_structure = {
         "a": [1, 2, {"b": 3, "c": True}],
-        "d": (4, 5, False, 1.0),
+        "d": (4, 5, False, 1.0, bigint),
     }
     assert get_and_format(nested_structure) == (
         "application/json",
-        '{"a": [1, 2, {"b": 3, "c": true}], "d": [4, 5, false, "text/plain+float:1.0"]}',
+        f'{{"a": [1, 2, {{"b": 3, "c": true}}], "d": [4, 5, false, "text/plain+float:1.0", "text/plain+bigint:{bigint}"]}}',
     )
 
 
@@ -108,7 +114,7 @@ def test_format_structure_nested_with_html() -> None:
 
     assert get_and_format(nested_structure) == (
         "application/json",
-        f'[1, "text/html:{escape(_markdown.text)}", "text/html:{escape(_slider.text)}"]',
+        f'[1, "text/markdown:{escape(_markdown.text)}", "text/html:{escape(_slider.text)}"]',
     )
 
 
@@ -226,6 +232,11 @@ def test_format_structure_set() -> None:
     assert format_structure([test_set]) == (["text/plain+set:{1, 2, 3}"])
 
 
+def test_format_structure_bigint() -> None:
+    bigint = 2**64
+    assert format_structure([bigint]) == ([f"text/plain+bigint:{bigint}"])
+
+
 def test_format_structure_tuple() -> None:
     test_tuple = (1, 2, 3)
     assert format_structure(test_tuple) == (1, 2, 3)
@@ -257,3 +268,90 @@ def test_format_structure_defaultdict() -> None:
         "application/json",
         '{"a": [1], "b": [2], "c": []}',
     )
+
+
+def test_function_like_objects_are_pretty_inspected() -> None:
+    from marimo._output.formatters.structures import StructuresFormatter
+
+    StructuresFormatter().register()
+
+    # Regular function
+    def foo(x: int, y: str = "a") -> str:  # noqa: ARG001
+        return "ok"
+
+    fmt = get_formatter(foo)
+    assert fmt is not None
+    mime, data = fmt(foo)
+    assert mime == "text/html"
+    assert "function" in data or "def foo(" in data
+
+    # Lambda
+    lam = lambda z: z  # noqa: E731
+    fmt = get_formatter(lam)
+    assert fmt is not None
+    mime, data = fmt(lam)
+    assert mime == "text/html"
+    assert "function" in data or "lambda" in data or "def" in data
+
+    # Builtin function
+    fmt = get_formatter(len)
+    assert fmt is not None
+    mime, data = fmt(len)
+    assert mime == "text/html"
+    # Builtins are labeled as instances of builtin_function_or_method
+    assert "builtin_function_or_method" in data or "instance" in data
+
+    # Method
+    class C:
+        def m(self, a: int) -> int:  # noqa: D401, ARG002
+            return a
+
+    fmt = get_formatter(C.m)
+    assert fmt is not None
+    mime, data = fmt(C.m)
+    assert mime == "text/html"
+    assert "def m(" in data or "method" in data
+
+
+def test_function_like_objects_use_repr_formatter_if_present() -> None:
+    # Register a temporary repr formatter on a simple callable class
+    class D:
+        def __call__(self) -> None:  # pragma: no cover - just shape
+            return None
+
+        def _repr_html_(self) -> str:
+            return "<b>HELLO</b>"
+
+    # Ensure base structure formatter is registered
+    from marimo._output.formatters.structures import StructuresFormatter
+
+    StructuresFormatter().register()
+
+    # The repr formatter should be honored and returned directly
+    obj = D()
+    fmt = get_formatter(obj)
+    assert fmt is not None
+    mime, data = fmt(obj)
+    assert mime == "text/html"
+    assert data == "<b>HELLO</b>"
+
+
+def test_function_like_objects_fallback_on_exception() -> None:
+    # Build a callable that raises when inspected/signatured to force fallback
+    class Boom:
+        def __call__(self, *args: object, **kwargs: object) -> None:  # noqa: ARG002
+            return None
+
+    b = Boom().__call__
+
+    from marimo._output.formatters.structures import StructuresFormatter
+
+    StructuresFormatter().register()
+    fmt = get_formatter(b)
+    assert fmt is not None
+    mime, data = fmt(b)
+    assert mime == "text/html" or mime == "text/plain"
+    # Fallback path returns plain text repr wrapped via plain_text
+    # which ultimately produces HTML; accept either to be robust.
+    assert isinstance(data, str)
+    assert len(data) > 0

@@ -9,22 +9,26 @@ import { Tooltip } from "../ui/tooltip";
 import { toast } from "../ui/use-toast";
 
 interface Props {
-  value: string | (() => string);
+  value: string | ((event: React.MouseEvent) => string);
   className?: string;
-  tooltip?: string | false;
+  buttonClassName?: string;
+  tooltip?: React.ReactNode | false;
   toastTitle?: string;
+  ariaLabel?: string;
 }
 
 export const CopyClipboardIcon: React.FC<Props> = ({
   value,
   className,
+  buttonClassName,
   tooltip,
   toastTitle,
+  ariaLabel,
 }) => {
   const [isCopied, setIsCopied] = useState(false);
 
-  const handleCopy = Events.stopPropagation(async () => {
-    const valueToCopy = typeof value === "function" ? value() : value;
+  const handleCopy = Events.stopPropagation(async (event: React.MouseEvent) => {
+    const valueToCopy = typeof value === "function" ? value(event) : value;
     await copyToClipboard(valueToCopy).then(() => {
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
@@ -35,9 +39,14 @@ export const CopyClipboardIcon: React.FC<Props> = ({
   });
 
   const button = (
-    <button type="button" onClick={handleCopy} aria-label="Copy to clipboard">
+    <button
+      type="button"
+      onClick={handleCopy}
+      aria-label={ariaLabel ?? "Copy to clipboard"}
+      className={buttonClassName}
+    >
       {isCopied ? (
-        <CheckIcon className={cn(className, "text-[var(--grass-11)]")} />
+        <CheckIcon className={cn(className, "text-(--grass-11)")} />
       ) : (
         <Copy className={className} />
       )}

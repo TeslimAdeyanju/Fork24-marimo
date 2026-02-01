@@ -19,13 +19,17 @@ export function getNodeHeight(linesOfCode: number) {
   return Math.min(linesOfCode * LINE_HEIGHT + 35, 200);
 }
 
+// The nodes must have the same handle IDs to ensure edges connect correctly
+export const OUTPUTS_HANDLE_ID = "outputs";
+export const INPUTS_HANDLE_ID = "inputs";
+
 interface ElementsBuilder {
   createElements: (
     cellIds: CellId[],
-    cellAtoms: Array<Atom<CellData>>,
+    cellAtoms: Atom<CellData>[],
     variables: Variables,
     hidePureMarkdown: boolean,
-  ) => { nodes: Array<Node<NodeData>>; edges: Edge[] };
+  ) => { nodes: Node<NodeData>[]; edges: Edge[] };
 }
 
 export class VerticalElementsBuilder implements ElementsBuilder {
@@ -69,12 +73,12 @@ export class VerticalElementsBuilder implements ElementsBuilder {
 
   createElements(
     cellIds: CellId[],
-    cellAtoms: Array<Atom<CellData>>,
+    cellAtoms: Atom<CellData>[],
     variables: Variables,
-    hidePureMarkdown: boolean,
+    _hidePureMarkdown: boolean,
   ) {
     let prevY = 0;
-    const nodes: Array<Node<NodeData>> = [];
+    const nodes: Node<NodeData>[] = [];
     const edges: Edge[] = [];
     for (const [cellId, cellAtom] of Arrays.zip(cellIds, cellAtoms)) {
       const node = this.createNode(cellId, cellAtom, prevY);
@@ -93,8 +97,8 @@ export class VerticalElementsBuilder implements ElementsBuilder {
           }
           visited.add(key);
           edges.push(
-            this.createEdge(fromId, toId, "inputs"),
-            this.createEdge(fromId, toId, "outputs"),
+            this.createEdge(fromId, toId, INPUTS_HANDLE_ID),
+            this.createEdge(fromId, toId, OUTPUTS_HANDLE_ID),
           );
         }
       }
@@ -114,8 +118,9 @@ export class TreeElementsBuilder implements ElementsBuilder {
       // Make thicker
       style: { strokeWidth: 2 },
       source: source,
-      sourceHandle: "outputs",
-      targetHandle: "inputs",
+      // Use the same handle ids as the custom node
+      sourceHandle: OUTPUTS_HANDLE_ID,
+      targetHandle: INPUTS_HANDLE_ID,
       target: target,
     };
   }
@@ -135,11 +140,11 @@ export class TreeElementsBuilder implements ElementsBuilder {
 
   createElements(
     cellIds: CellId[],
-    cellAtoms: Array<Atom<CellData>>,
+    cellAtoms: Atom<CellData>[],
     variables: Variables,
     hidePureMarkdown: boolean,
   ) {
-    const nodes: Array<Node<NodeData>> = [];
+    const nodes: Node<NodeData>[] = [];
     const edges: Edge[] = [];
 
     const nodesWithEdges = new Set<CellId>();

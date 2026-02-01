@@ -8,9 +8,23 @@ import type { OutputMessage } from "../kernel/messages";
 // Tags that we don't want to include in the outline
 const excludedTags = ["marimo-carousel", "marimo-tabs", "marimo-accordion"];
 
-function getOutline(html: string): Outline {
-  const items: Outline["items"] = [];
+/**
+ * Extracts a table of contents {@link Outline} from an HTML string.
+ *
+ * Each {@link OutlineItem} corresponds to a heading (h1–h6) found in the input.
+ *
+ * @param html - The HTML content to parse.
+ * @returns An {@link Outline}, otherwise `null` if parsing via isn't supported in JS runtime (e.g., Node).
+ */
+function getOutline(html: string): Outline | null {
+  // Some JS runtimes (e.g. Node.js for the VSCode extension) do not
+  // expose DOMParser globally. In those environments parsing isn't
+  // possible (without a polyfill), so return just return `null`.
+  if (typeof DOMParser === "undefined") {
+    return null;
+  }
 
+  const items: Outline["items"] = [];
   const parser = new DOMParser();
   const document = parser.parseFromString(html, "text/html");
 
@@ -43,7 +57,7 @@ export function headingToIdentifier(heading: Element): OutlineItem["by"] {
   return { path: `//${heading.tagName}[contains(., "${name}")]` };
 }
 
-export function mergeOutlines(outlines: Array<Outline | null>): Outline {
+export function mergeOutlines(outlines: (Outline | null)[]): Outline {
   return {
     items: outlines.filter(Boolean).flatMap((outline) => outline.items),
   };
@@ -54,7 +68,7 @@ export function parseOutline(output: OutputMessage | null): Outline | null {
     return null;
   }
 
-  if (output.mimetype !== "text/html") {
+  if (output.mimetype !== "text/html" && output.mimetype !== "text/markdown") {
     return null;
   }
 
@@ -90,7 +104,7 @@ export function canCollapseOutline(outline: Outline | null): boolean {
  */
 export function findCollapseRange(
   startIndex: number,
-  outlines: Array<Outline | null>,
+  outlines: (Outline | null)[],
 ): [number, number] | null {
   // Higher header is the lowest value
   const getHighestHeader = (outline: Outline) => {

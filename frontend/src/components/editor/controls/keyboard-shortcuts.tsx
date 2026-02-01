@@ -5,6 +5,7 @@ import { EditIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import { hotkeysAtom, useResolvedMarimoConfig } from "@/core/config/config";
 import type { UserConfig } from "@/core/config/config-schema";
 import {
@@ -13,7 +14,7 @@ import {
   type HotkeyGroup,
 } from "@/core/hotkeys/hotkeys";
 import { isPlatformMac } from "@/core/hotkeys/shortcuts";
-import { saveUserConfig } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { useHotkey } from "../../../hooks/useHotkey";
 import { KeyboardHotkeys } from "../../shortcuts/renderShortcut";
 import {
@@ -35,6 +36,7 @@ export const KeyboardShortcuts: React.FC = () => {
   const [newShortcut, setNewShortcut] = useState<string[]>([]);
   const [config, setConfig] = useResolvedMarimoConfig();
   const hotkeys = useAtomValue(hotkeysAtom);
+  const { saveUserConfig } = useRequestClient();
 
   useHotkey("global.showHelp", () => setIsOpen((v) => !v));
 
@@ -215,7 +217,7 @@ export const KeyboardShortcuts: React.FC = () => {
     return (
       <div
         key={action}
-        className="grid grid-cols-[auto,2fr,3fr] gap-2 items-center"
+        className="grid grid-cols-[auto_2fr_3fr] gap-2 items-center"
       >
         {hotkeys.isEditable(action) ? (
           <EditIcon
@@ -251,8 +253,17 @@ export const KeyboardShortcuts: React.FC = () => {
   const renderCommandGroup = (group: HotkeyGroup) =>
     renderGroup(
       group,
-      <p className="text-xs text-muted-foreground">
-        Press <kbd>Esc</kbd> in a cell to enter command mode
+      <p className="text-xs text-muted-foreground flex items-center gap-1">
+        Press{" "}
+        {config.keymap.preset === "vim" ? (
+          <>
+            <KeyboardHotkeys shortcut={isPlatformMac() ? "Cmd" : "Ctrl"} />
+            <Kbd>Esc</Kbd>
+          </>
+        ) : (
+          <Kbd>Esc</Kbd>
+        )}{" "}
+        in a cell to enter command mode
       </p>,
     );
 

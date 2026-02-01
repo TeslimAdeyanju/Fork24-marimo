@@ -14,12 +14,18 @@ from marimo._data.models import (
 )
 from marimo._dependencies.dependencies import DependencyManager
 from marimo._sql.engines.types import InferenceConfig, SQLConnection
-from marimo._sql.utils import raise_df_import_error, sql_type_to_data_type
+from marimo._sql.utils import (
+    CHEAP_DISCOVERY_DATABASES,
+    convert_to_output,
+    sql_type_to_data_type,
+)
 from marimo._types.ids import VariableName
 
 LOGGER = _loggers.marimo_logger()
 
 if TYPE_CHECKING:
+    import pandas as pd
+    import polars as pl
     from sqlalchemy import Engine, Inspector
     from sqlalchemy.engine.cursor import CursorResult
     from sqlalchemy.sql.type_api import TypeEngine
@@ -74,43 +80,21 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
             if rows is None:
                 return None
 
-            if sql_output_format == "polars":
+            def convert_to_polars() -> pl.DataFrame:
                 import polars as pl
 
-                return pl.DataFrame(rows)  # type: ignore
-            if sql_output_format == "lazy-polars":
-                import polars as pl
+                return pl.DataFrame(rows)
 
-                return pl.DataFrame(rows).lazy()  # type: ignore
-            if sql_output_format == "pandas":
+            def convert_to_pandas() -> pd.DataFrame:
                 import pandas as pd
 
                 return pd.DataFrame(rows)
 
-            # Auto
-
-            if DependencyManager.polars.has():
-                import polars as pl
-
-                try:
-                    return pl.DataFrame(rows)  # type: ignore
-                except (
-                    pl.exceptions.PanicException,
-                    pl.exceptions.ComputeError,
-                ) as e:
-                    LOGGER.warning(f"Failed to convert to polars. Reason: {e}")
-                    DependencyManager.pandas.require("to convert this data")
-
-            if DependencyManager.pandas.has():
-                import pandas as pd
-
-                try:
-                    return pd.DataFrame(rows)
-                except Exception as e:
-                    LOGGER.warning("Failed to convert dataframe", exc_info=e)
-                    return None
-
-            raise_df_import_error("polars[pyarrow]")
+            return convert_to_output(
+                sql_output_format=sql_output_format,
+                to_polars=convert_to_polars,
+                to_pandas=convert_to_pandas,
+            )
 
     @staticmethod
     def is_compatible(var: Any) -> bool:
@@ -142,8 +126,10 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
         from sqlalchemy import text
 
         try:
-            if self._connection.url.database is not None:
-                return self._connection.url.database
+            if self._connection.url.database is not None and isinstance(
+                self._connection.url.database, str
+            ):
+                return str(self._connection.url.database)
         except Exception:
             LOGGER.warning("Connection URL is invalid", exc_info=True)
             return None
@@ -186,7 +172,14 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
             return None
 
         try:
-            return self.inspector.default_schema_name
+            default_schema_name = self.inspector.default_schema_name
+            # https://github.com/marimo-team/marimo/issues/6436.
+            # Upstream bug where default schema name is not a string.
+            if default_schema_name is None or not isinstance(
+                default_schema_name, str
+            ):
+                return None
+            return str(default_schema_name)
         except Exception:
             LOGGER.warning("Failed to get default schema name", exc_info=True)
             return None
@@ -290,9 +283,12 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
         except Exception:
             LOGGER.warning("Failed to get tables in schema", exc_info=True)
             return []
-        tables: list[tuple[DataTableType, str]] = [
-            ("table", name) for name in table_names
-        ] + [("view", name) for name in view_names]
+
+        tables: list[tuple[DataTableType, str]] = []
+        for name in table_names:
+            tables.append(("table", name))
+        for name in view_names:
+            tables.append(("view", name))
 
         if not include_table_details:
             return [
@@ -430,7 +426,7 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
         return value
 
     def _is_cheap_discovery(self) -> bool:
-        return self.dialect.lower() in ("sqlite", "mysql", "postgresql")
+        return self.dialect.lower() in CHEAP_DISCOVERY_DATABASES
 
     @staticmethod
     def is_cursor_result(result: Any) -> bool:
@@ -444,25 +440,27 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
     @staticmethod
     def get_cursor_metadata(
         result: CursorResult[Any],
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any]:
         try:
-            description = result.cursor.description
-            column_info = {
-                "column_names": [col[0] for col in description],
-                "type_code": [col[1] for col in description],
-                "display_size": [col[2] for col in description],
-                "internal_size": [col[3] for col in description],
-                "precision": [col[4] for col in description],
-                "scale": [col[5] for col in description],
-                "null_ok": [col[6] for col in description],
-            }
+            column_info = None
+            if result.cursor is not None:
+                description = result.cursor.description
+                column_info = {
+                    "column_names": [col[0] for col in description],
+                    "type_code": [col[1] for col in description],
+                    "display_size": [col[2] for col in description],
+                    "internal_size": [col[3] for col in description],
+                    "precision": [col[4] for col in description],
+                    "scale": [col[5] for col in description],
+                    "null_ok": [col[6] for col in description],
+                }
 
             if result.context.isddl:
                 sql_statement_type = "DDL"
             elif result.context.is_crud:
                 sql_statement_type = "DML"
             else:
-                sql_statement_type = "Query"
+                sql_statement_type = "Query / Unknown"
 
             data = {
                 "result_type": str(type(result)),
@@ -477,4 +475,7 @@ class SQLAlchemyEngine(SQLConnection["Engine"]):
             LOGGER.warning(
                 "Failed to convert cursor result to df", exc_info=True
             )
-            return None
+            return {
+                "result_type": str(type(result)),
+                "error": "Failed to convert cursor result to df",
+            }

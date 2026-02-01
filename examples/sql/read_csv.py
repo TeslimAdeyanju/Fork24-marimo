@@ -11,19 +11,17 @@
 
 import marimo
 
-__generated_with = "0.11.18"
+__generated_with = "0.17.4"
 app = marimo.App(width="medium")
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        """
-        # Read CSV
+    mo.md("""
+    # Read CSV
 
-        This notebook shows how to read a CSV file from a local file or a URL into an in-memory table.
-        """
-    )
+    This notebook shows how to read a CSV file from a local file or a URL into an in-memory table.
+    """)
     return
 
 
@@ -33,12 +31,14 @@ def _():
     import polars as pl
 
     pl.DataFrame({"A": [1, 2, 3], "B": ["a", "b", "c"]}).write_csv("data.csv")
-    return mo, pl
+    return (mo,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("""Reading from a local CSV is as easy as `SELECT * from "data.csv"`, where `data.csv` is the path to your local file (or a URL to a CSV file).""")
+    mo.md("""
+    Reading from a local CSV is as easy as `SELECT * from "data.csv"`, where `data.csv` is the path to your local file (or a URL to a CSV file).
+    """)
     return
 
 
@@ -101,13 +101,11 @@ def _(result):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Create an in-memory table from a CSV file
+    mo.md(r"""
+    ## Create an in-memory table from a CSV file
 
-        You can also create a table from a CSV file, so you can easily query it in subsequent cells. This table will appear in marimo's data sources panel.
-        """
-    )
+    You can also create a table from a CSV file, so you can easily query it in subsequent cells. This table will appear in marimo's data sources panel.
+    """)
     return
 
 
@@ -118,11 +116,11 @@ def _(mo):
         CREATE TABLE myTable AS SELECT * FROM "data.csv"
         """
     )
-    return (myTable,)
+    return
 
 
 @app.cell
-def _(mo, myTable):
+def _(mo):
     _df = mo.sql(
         f"""
         SELECT * FROM myTable
@@ -133,13 +131,17 @@ def _(mo, myTable):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""## Advanced usage""")
+    mo.md(r"""
+    ## Advanced usage
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""To customize how your CSV is read, including specifying the delimiter type, use [duckdb's `read_csv` function](https://duckdb.org/docs/data/csv/overview.html).""")
+    mo.md(r"""
+    To customize how your CSV is read, including specifying the delimiter type, use [duckdb's `read_csv` function](https://duckdb.org/docs/data/csv/overview.html).
+    """)
     return
 
 

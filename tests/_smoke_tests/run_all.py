@@ -17,13 +17,13 @@ config_file = os.path.join(os.path.dirname(__file__), "config.yml")
 
 
 async def test_all_smoke_tests() -> None:
-    root = os.path.realpath(
+    root = os.path.realpath(  # noqa: ASYNC240
         str(import_files("marimo").joinpath("_smoke_tests"))
     )
-    all_py_paths = list(pathlib.Path(root).rglob("*.py"))
+    all_py_paths = list(pathlib.Path(root).rglob("*.py"))  # noqa: ASYNC240
     assert all_py_paths, "No smoke tests found"
 
-    with open(config_file) as f:  # noqa: ASYNC101 ASYNC230
+    with open(config_file) as f:  # noqa: ASYNC230
         smoke_test_config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
     semaphore = asyncio.Semaphore(CONCURRENT_TESTS)
@@ -35,13 +35,13 @@ async def test_all_smoke_tests() -> None:
 
 
 async def test_all_examples() -> None:
-    root = os.path.realpath(
+    root = os.path.realpath(  # noqa: ASYNC240
         str(import_files("marimo").joinpath("../examples"))
     )
-    all_py_paths = list(pathlib.Path(root).rglob("*.py"))
+    all_py_paths = list(pathlib.Path(root).rglob("*.py"))  # noqa: ASYNC240
     assert all_py_paths, "No examples found"
 
-    with open(config_file) as f:  # noqa: ASYNC101 ASYNC230
+    with open(config_file) as f:  # noqa: ASYNC230
         smoke_test_config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
     semaphore = asyncio.Semaphore(CONCURRENT_TESTS)
@@ -71,7 +71,7 @@ async def _run_test(
         )
         input_data = file_config.get("input", None)
 
-        with open(file) as f:  # noqa: ASYNC101 ASYNC230
+        with open(file) as f:  # noqa: ASYNC230
             content = f.read()
             if "marimo.App(" not in content:
                 return

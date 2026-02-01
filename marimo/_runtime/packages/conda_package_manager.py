@@ -22,14 +22,17 @@ class CondaPackageManager(CanonicalizingPackageManager):
 class PixiPackageManager(CondaPackageManager):
     name = "pixi"
 
-    async def _install(self, package: str, *, upgrade: bool) -> bool:
-        if upgrade:
-            return self.run(["pixi", "upgrade", *split_packages(package)])
-        else:
-            return self.run(["pixi", "add", *split_packages(package)])
+    def install_command(self, package: str, *, upgrade: bool) -> list[str]:
+        return [
+            "pixi",
+            "upgrade" if upgrade else "add",
+            *split_packages(package),
+        ]
 
     async def uninstall(self, package: str) -> bool:
-        return self.run(["pixi", "remove", *split_packages(package)])
+        return self.run(
+            ["pixi", "remove", *split_packages(package)], log_callback=None
+        )
 
     def list_packages(self) -> list[PackageDescription]:
         import json
@@ -43,6 +46,7 @@ class PixiPackageManager(CondaPackageManager):
                 ["pixi", "list", "--json"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 check=True,
             )
             packages = json.loads(proc.stdout)

@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import threading
 from typing import Optional
 
 import uvicorn
 
 import marimo._server.api.lifespans as lifespans
+from marimo._cli.print import echo
 from marimo._config.manager import get_default_config_manager
 from marimo._config.settings import GLOBAL_SETTINGS
+from marimo._mcp.server.main import setup_mcp_server
+from marimo._messaging.ops import StartupLogs
 from marimo._runtime.requests import SerializedCLIArgs
 from marimo._server.file_router import AppFileRouter
 from marimo._server.lsp import CompositeLspServer, NoopLspServer
@@ -30,6 +35,77 @@ from marimo._utils.paths import marimo_package_path
 
 DEFAULT_PORT = 2718
 PROXY_REGEX = re.compile(r"^(.*):(\d+)$")
+
+
+def _execute_startup_command(
+    command: str, session_manager: SessionManager
+) -> None:
+    """Execute a server startup command in a background thread and stream logs."""
+
+    def run_command() -> None:
+        buffer = StartupLogs(content="", status="start")
+
+        try:
+
+            def write_to_all_sessions(
+                content: StartupLogs, buffer: StartupLogs
+            ) -> None:
+                for session in session_manager.sessions.values():
+                    # Clear buffer if it has content
+                    if buffer.content != "":
+                        session.write_operation(buffer, from_consumer_id=None)
+                        buffer = StartupLogs(content="", status="start")
+                    session.write_operation(content, from_consumer_id=None)
+                else:
+                    buffer.content += content.content
+                    buffer.status = content.status
+
+            # Broadcast start message to all sessions
+            write_to_all_sessions(
+                StartupLogs(content="", status="start"), buffer
+            )
+
+            # Execute the command
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Stream stderr to stdout
+                text=True,
+                universal_newlines=True,
+            )
+
+            # Stream output line by line
+            if process.stdout:
+                for line in process.stdout:
+                    write_to_all_sessions(
+                        StartupLogs(content=line, status="append"), buffer
+                    )
+                    echo(line, nl=False)
+
+            # Wait for process to complete
+            return_code = process.wait()
+
+            # Broadcast completion message
+            final_message = (
+                f"\nProcess completed with exit code: {return_code}\n"
+            )
+            write_to_all_sessions(
+                StartupLogs(content=final_message, status="done"), buffer
+            )
+            echo(final_message)
+
+        except Exception as e:
+            # Broadcast error message
+            error_message = f"\nError executing startup command: {str(e)}\n"
+            write_to_all_sessions(
+                StartupLogs(content=error_message, status="done"), buffer
+            )
+            echo(error_message)
+
+    # Run the command in a background thread
+    thread = threading.Thread(target=run_command)
+    thread.start()
 
 
 def _resolve_proxy(
@@ -90,10 +166,25 @@ def start(
     redirect_console_to_browser: bool,
     skew_protection: bool,
     remote_url: Optional[str] = None,
+    mcp: bool = False,
+    server_startup_command: Optional[str] = None,
+    asset_url: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> None:
     """
     Start the server.
     """
+    import packaging.version
+
+    # Defaults when mcp is enabled
+    if mcp:
+        # Turn on watch mode
+        watch = True
+        # Turn off skew protection for MCP server
+        # since it is more convenient to connect to.
+        # Skew protection is not a security thing, but rather
+        # prevents connecting to old servers.
+        skew_protection = False
 
     # Find a free port if none is specified
     # if the user specifies a port, we don't try to find a free one
@@ -129,7 +220,7 @@ def start(
                 }
             }
         )
-        LOGGER.info("Watch mode enabled, auto-save is disabled")
+        LOGGER.warning("Watch mode enabled, auto-save is disabled")
 
     if GLOBAL_SETTINGS.MANAGE_SCRIPT_METADATA:
         config_reader = config_reader.with_overrides(
@@ -161,28 +252,41 @@ def start(
 
     log_level = "info" if development_mode else "error"
 
+    lifespans_list = [
+        lifespans.lsp,
+        lifespans.mcp,
+        lifespans.etc,
+        lifespans.signal_handler,
+        lifespans.logging,
+        lifespans.open_browser,
+        lifespans.tool_manager,
+        *LIFESPAN_REGISTRY.get_all(),
+    ]
+
+    mcp_enabled = mcp and mode == SessionMode.EDIT
+
+    if mcp_enabled:
+        from marimo._mcp.server.lifespan import mcp_server_lifespan
+
+        lifespans_list.append(mcp_server_lifespan)
+
     (external_port, external_host) = _resolve_proxy(port, host, proxy)
+    enable_auth = not AuthToken.is_empty(session_manager.auth_token)
     app = create_starlette_app(
         base_url=base_url,
         host=external_host,
-        lifespan=Lifespans(
-            [
-                lifespans.lsp,
-                lifespans.mcp,
-                lifespans.etc,
-                lifespans.signal_handler,
-                lifespans.logging,
-                lifespans.open_browser,
-                *LIFESPAN_REGISTRY.get_all(),
-            ]
-        ),
+        lifespan=Lifespans(lifespans_list),
         allow_origins=allow_origins,
-        enable_auth=not AuthToken.is_empty(session_manager.auth_token),
+        enable_auth=enable_auth,
         lsp_servers=list(lsp_composite_server.servers.values())
         if lsp_composite_server is not None
         else None,
         skew_protection=skew_protection,
+        timeout=timeout,
     )
+
+    if mcp_enabled:
+        setup_mcp_server(app)
 
     app.state.port = external_port
     app.state.host = external_host
@@ -191,14 +295,45 @@ def start(
     app.state.watch = watch
     app.state.session_manager = session_manager
     app.state.base_url = base_url
+    app.state.asset_url = asset_url
     app.state.config_manager = config_reader
     app.state.remote_url = remote_url
+    app.state.mcp_server_enabled = mcp
+    app.state.skew_protection = skew_protection
+    app.state.enable_auth = enable_auth
 
     # Resource initialization
     # Increase the limit on open file descriptors to prevent resource
     # exhaustion when opening multiple notebooks in the same server.
     initialize_fd_limit(limit=4096)
     initialize_signals()
+
+    # Platform-specific initialization of the event loop policy (Windows
+    # requires SelectorEventLoop).
+    initialize_asyncio()
+
+    if packaging.version.Version(
+        uvicorn.__version__
+    ) >= packaging.version.Version("0.36.0"):
+        # uvicorn 0.36.0 introduced custom event loop policies, and uses a loop
+        # factory instead of asyncio's global event loop policy (the latter was
+        # deprecated in Python 3.14).
+        #
+        # We have to use a SelectorEventLoop on Windows in particular (because
+        # we use the add_reader API); Selector is already the default on Unix.
+        #
+        # The syntax is awkward: <module>:function
+        edit_loop_policy = "asyncio:SelectorEventLoop"
+    else:
+        # Older versions of uvicorn use the globally configured event
+        # loop policy
+        edit_loop_policy = "asyncio"
+
+    # Under uvloop, reading the socket we monitor under add_reader()
+    # occasionally throws BlockingIOError (errno 11, or errno 35,
+    # ...). RUN mode no longer uses a socket (it has no IPC) but EDIT
+    # does, so force asyncio.
+    loop_policy = edit_loop_policy if mode == SessionMode.EDIT else "auto"
 
     server = uvicorn.Server(
         uvicorn.Config(
@@ -227,14 +362,15 @@ def start(
             # close the websocket if we don't receive a pong after 60 seconds
             ws_ping_timeout=60,
             timeout_graceful_shutdown=1,
-            # Under uvloop, reading the socket we monitor under add_reader()
-            # occasionally throws BlockingIOError (errno 11, or errno 35,
-            # ...). RUN mode no longer uses a socket (it has no IPC) but EDIT
-            # does, so force asyncio.
-            loop="asyncio" if mode == SessionMode.EDIT else "auto",
+            # loop can take an arbitrary string but mypy is complaining
+            # expecting it to be a Literal
+            loop=loop_policy,  # type:ignore[arg-type]
         )
     )
     app.state.server = server
 
-    initialize_asyncio()
+    # Execute server startup command if provided
+    if server_startup_command:
+        _execute_startup_command(server_startup_command, session_manager)
+
     server.run()

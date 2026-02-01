@@ -2,10 +2,10 @@
 
 import { historyField } from "@codemirror/commands";
 import { type Atom, atom, useAtom, useAtomValue } from "jotai";
-import { selectAtom, splitAtom } from "jotai/utils";
+import { atomFamily, selectAtom, splitAtom } from "jotai/utils";
 import { isEqual, zip } from "lodash-es";
 import { createRef, type ReducerWithoutAction } from "react";
-import type { CellHandle } from "@/components/editor/Cell";
+import type { CellHandle } from "@/components/editor/notebook-cell";
 import {
   type CellColumnId,
   type CellIndex,
@@ -29,7 +29,7 @@ import type { CellConfig } from "../network/types";
 import { isRtcEnabled } from "../rtc/state";
 import { createDeepEqualAtom, store } from "../state/jotai";
 import { prepareCellForExecution, transitionCell } from "./cell";
-import { CellId } from "./ids";
+import { CellId, SCRATCH_CELL_ID, SETUP_CELL_ID } from "./ids";
 import { type CellLog, getCellLogsForMessage } from "./logs";
 import {
   focusAndScrollCellIntoView,
@@ -51,13 +51,6 @@ import {
   notebookNeedsRun,
   notebookQueueOrRunningCount,
 } from "./utils";
-
-export const SCRATCH_CELL_ID = "__scratch__" as CellId;
-export const SETUP_CELL_ID = "setup" as CellId;
-
-export function isSetupCell(cellId: CellId): boolean {
-  return cellId === SETUP_CELL_ID;
-}
 
 /**
  * The state of the notebook.
@@ -84,14 +77,14 @@ export interface NotebookState {
    *
    * (CodeMirror types the serialized config as any.)
    */
-  history: Array<{
+  history: {
     name: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     serializedEditorState: any;
     column: CellColumnId;
     index: CellIndex;
     isSetupCell: boolean;
-  }>;
+  }[];
   /**
    * Key of cell to scroll to; typically set by actions that re-order the cell
    * array. Call the SCROLL_TO_TARGET action to scroll to the specified cell
@@ -145,6 +138,36 @@ export function initialNotebookState(): NotebookState {
   });
 }
 
+/** The target cell ID to create a new cell relative to. Can be:
+ * - A CellId string for an existing cell
+ * - "__end__" to append at the end of the first column
+ * - {type: "__end__", columnId} to append at the end of a specific column
+ */
+export type CellPosition =
+  | CellId
+  | "__end__"
+  | { type: "__end__"; columnId: CellColumnId };
+
+export interface CreateNewCellAction {
+  cellId: CellPosition;
+  /** Whether to insert before (true) or after (false) the target cell */
+  before: boolean;
+  /** Initial code content for the new cell */
+  code?: string;
+  /** The last executed code for the new cell */
+  lastCodeRun?: string;
+  /** Timestamp of the last execution */
+  lastExecutionTime?: number;
+  /** Optional custom ID for the new cell. Auto-generated if not provided */
+  newCellId?: CellId;
+  /** Whether to focus the new cell after creation */
+  autoFocus?: boolean;
+  /** If true, skip creation if code already exists */
+  skipIfCodeExists?: boolean;
+  /** Hide the code in the new cell. This will be initially shown until the cell is blurred for the first time. */
+  hideCode?: boolean;
+}
+
 /**
  * Actions and reducer for the notebook state.
  */
@@ -154,33 +177,7 @@ const {
   useActions,
   valueAtom: notebookAtom,
 } = createReducerAndAtoms(initialNotebookState, {
-  createNewCell: (
-    state,
-    action: {
-      /** The target cell ID to create a new cell relative to. Can be:
-       * - A CellId string for an existing cell
-       * - "__end__" to append at the end of the first column
-       * - {type: "__end__", columnId} to append at the end of a specific column
-       */
-      cellId: CellId | "__end__" | { type: "__end__"; columnId: CellColumnId };
-      /** Whether to insert before (true) or after (false) the target cell */
-      before: boolean;
-      /** Initial code content for the new cell */
-      code?: string;
-      /** The last executed code for the new cell */
-      lastCodeRun?: string;
-      /** Timestamp of the last execution */
-      lastExecutionTime?: number;
-      /** Optional custom ID for the new cell. Auto-generated if not provided */
-      newCellId?: CellId;
-      /** Whether to focus the new cell after creation */
-      autoFocus?: boolean;
-      /** If true, skip creation if code already exists */
-      skipIfCodeExists?: boolean;
-      /** Hide the code in the new cell. This will be initially shown until the cell is blurred for the first time. */
-      hideCode?: boolean;
-    },
-  ) => {
+  createNewCell: (state, action: CreateNewCellAction) => {
     const {
       cellId,
       before,
@@ -591,6 +588,8 @@ const {
     });
     serializedEditorState.doc = state.cellData[cellId].code;
 
+    // release the granular atom(s) created for this cell
+    releaseCellAtoms(cellId);
     return {
       ...state,
       cellIds: state.cellIds.deleteById(cellId),
@@ -1127,10 +1126,10 @@ const {
 
         // Find the start/end of the collapsed ranges
         const nodes = [...column.nodes];
-        const rangeIndexes: Array<{
+        const rangeIndexes: {
           start: CellIndex;
           end: CellIndex;
-        }> = [];
+        }[] = [];
         const reversedCollapseRanges = [];
 
         // Iterate in reverse order (bottom-up) to process children first
@@ -1323,21 +1322,18 @@ const {
       cellRuntime: newCellRuntime,
     };
   },
-  upsertSetupCell: (state, action: { code: string }) => {
-    const { code } = action;
+  addSetupCellIfDoesntExist: (state, action: { code?: string }) => {
+    let { code } = action;
+    if (code == null) {
+      code = "# Initialization code that runs before all other cells";
+    }
 
-    // First check if setup cell already exists
-    if (SETUP_CELL_ID in state.cellData) {
-      // Update existing setup cell
-      return updateCellData({
-        state,
-        cellId: SETUP_CELL_ID,
-        cellReducer: (cell) => ({
-          ...cell,
-          code,
-          edited: code.trim() !== cell.lastCodeRun?.trim(),
-        }),
-      });
+    if (state.cellIds.setupCellExists()) {
+      // Just focus on the existing setup cell
+      return {
+        ...state,
+        scrollKey: SETUP_CELL_ID,
+      };
     }
 
     return {
@@ -1364,13 +1360,14 @@ const {
         ...state.cellHandles,
         [SETUP_CELL_ID]: createRef(),
       },
+      scrollKey: SETUP_CELL_ID,
     };
   },
 });
 
 function isCellCodeHidden(state: NotebookState, cellId: CellId): boolean {
   return (
-    state.cellData[cellId].config.hide_code &&
+    Boolean(state.cellData[cellId].config.hide_code) &&
     !state.untouchedNewCells.has(cellId)
   );
 }
@@ -1487,7 +1484,7 @@ export const canUndoDeletesAtom = atom((get) =>
 
 export const needsRunAtom = atom((get) => notebookNeedsRun(get(notebookAtom)));
 
-const cellErrorsAtom = atom((get) => {
+export const cellErrorsAtom = atom((get) => {
   const { cellIds, cellRuntime, cellData } = get(notebookAtom);
   const errors = cellIds.inOrderIds
     .map((cellId) => {
@@ -1537,6 +1534,8 @@ export const cellIdToNamesMap = createDeepEqualAtom(
   }),
 );
 
+const scrollKeyAtom = atom((get) => get(notebookAtom).scrollKey);
+
 /// HOOKS
 
 /**
@@ -1563,6 +1562,11 @@ export const useCellErrors = () => useAtomValue(cellErrorsAtom);
  * React-hook for the cell logs.
  */
 export const useCellLogs = () => useAtomValue(notebookAtom).cellLogs;
+
+/**
+ * React-hook for the notebook scrollKey
+ */
+export const useScrollKey = () => useAtomValue(scrollKeyAtom);
 
 /// IMPERATIVE GETTERS
 
@@ -1608,13 +1612,48 @@ export const columnIdsAtom = atom((get) =>
   get(notebookAtom).cellIds.getColumnIds(),
 );
 
+export const cellDataAtom = atomFamily((cellId: CellId) =>
+  atom((get) => get(notebookAtom).cellData[cellId]),
+);
+const cellRuntimeAtom = atomFamily((cellId: CellId) =>
+  atom((get) => get(notebookAtom).cellRuntime[cellId]),
+);
+export const cellHandleAtom = atomFamily((cellId: CellId) =>
+  atom((get) => get(notebookAtom).cellHandles[cellId]),
+);
+/**
+ * Cleans up atomFamily cache entries for the given cell.
+ *
+ * Jotai's atomFamily retains a cache of created atoms, which can cause memory leaks
+ * if not explicitly removed. This function removes the atoms associated with a specific
+ * cellId to free up memory.
+ *
+ * @param cellId - The cell ID whose atoms should be removed.
+ * @see https://jotai.org/docs/utilities/family#caveat-memory-leaks
+ */
+export function releaseCellAtoms(cellId: CellId) {
+  cellDataAtom.remove(cellId);
+  cellRuntimeAtom.remove(cellId);
+  cellHandleAtom.remove(cellId);
+}
+
+/** Subscribes to reactive updates of the cell's data. */
+export const useCellData = (cellId: CellId) =>
+  useAtomValue(cellDataAtom(cellId));
+/** Subscribes to reactive updates of the cell's runtime info. */
+export const useCellRuntime = (cellId: CellId) =>
+  useAtomValue(cellRuntimeAtom(cellId));
+/** Subscribes to reactive updates of the cell's handle (e.g. refs or UI bindings). */
+export const useCellHandle = (cellId: CellId) =>
+  useAtomValue(cellHandleAtom(cellId));
+
 /**
  * Get the editor views for all cells.
  */
 export const getAllEditorViews = () => {
   const { cellIds, cellHandles } = store.get(notebookAtom);
   return cellIds.inOrderIds
-    .map((cellId) => cellHandles[cellId]?.current?.editorView)
+    .map((cellId) => cellHandles[cellId]?.current?.editorViewOrNull)
     .filter(Boolean);
 };
 
@@ -1625,7 +1664,7 @@ export const getCellEditorView = (cellId: CellId) => {
 
 export function flattenTopLevelNotebookCells(
   state: NotebookState,
-): Array<CellData & CellRuntimeState> {
+): (CellData & CellRuntimeState)[] {
   const { cellIds, cellData, cellRuntime } = state;
   return cellIds.getColumns().flatMap((column) =>
     column.topLevelIds.map((cellId) => ({
@@ -1642,40 +1681,59 @@ export function createUntouchedCellAtom(cellId: CellId): Atom<boolean> {
 export function createTracebackInfoAtom(
   cellId: CellId,
 ): Atom<TracebackInfo[] | undefined> {
-  // We create an intermediate atom that just computes the string
-  // so it prevents downstream recomputations.
-  const tracebackStringAtom = atom<string | undefined>((get) => {
-    const notebook = get(notebookAtom);
-    const data = notebook.cellRuntime[cellId];
+  //use existing cellRuntimeAtom for intermediate computation
+  const cellRuntime = cellRuntimeAtom(cellId);
+
+  return atom((get) => {
+    const data = get(cellRuntime);
+
     if (!data) {
       return undefined;
     }
-    // Must be errored and idle
-    if (data.status !== "idle") {
+
+    if (data.status === "queued" || data.status === "running") {
       return undefined;
     }
+
+    const tracebackInfo: TracebackInfo[] = [];
+
+    // Runtime errors (ZeroDivisionError, etc.)
     const outputs = data.consoleOutputs;
-    // console.warn(notebook);
-    if (!outputs || outputs.length === 0) {
-      return undefined;
+    if (outputs && outputs.length > 0) {
+      const firstTraceback = outputs.find(
+        (output) => output.mimetype === "application/vnd.marimo+traceback",
+      );
+      if (firstTraceback) {
+        const traceback = firstTraceback.data as string;
+        tracebackInfo.push(...extractAllTracebackInfo(traceback));
+      }
     }
 
-    const firstTraceback = outputs.find(
-      (output) => output.mimetype === "application/vnd.marimo+traceback",
-    );
-    if (!firstTraceback) {
-      return undefined;
+    // Syntax errors
+    const output = data.output;
+    if (output?.mimetype === "application/vnd.marimo+error") {
+      const errors = output.data;
+      if (Array.isArray(errors)) {
+        for (const error of errors) {
+          if (error.type === "syntax" && error.lineno != null) {
+            tracebackInfo.push({
+              kind: "cell",
+              cellId: cellId,
+              lineNumber: error.lineno,
+            });
+          }
+          if (error.type === "import-star" && error.lineno != null) {
+            tracebackInfo.push({
+              kind: "cell",
+              cellId: cellId,
+              lineNumber: error.lineno,
+            });
+          }
+        }
+      }
     }
-    const traceback = firstTraceback.data;
-    return traceback as string;
-  });
 
-  return atom((get) => {
-    const traceback = get(tracebackStringAtom);
-    if (!traceback) {
-      return undefined;
-    }
-    return extractAllTracebackInfo(traceback);
+    return tracebackInfo.length > 0 ? tracebackInfo : undefined;
   });
 }
 
@@ -1700,4 +1758,9 @@ export const exportedForTesting = {
   createActions,
   initialNotebookState,
   isCellCodeHidden,
+  // Export atom families for testing cleanup
+  cellDataAtom,
+  cellRuntimeAtom,
+  cellHandleAtom,
+  createTracebackInfoAtom,
 };

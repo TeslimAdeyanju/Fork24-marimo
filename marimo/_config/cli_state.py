@@ -12,17 +12,14 @@ class MarimoCLIState:
     latest_version: Optional[str] = None
     last_checked_at: Optional[str] = None
     accepted_text_to_notebook_terms_at: Optional[str] = None
+    notices: Optional[list[str]] = None
 
 
 FILE_NAME = "state.toml"
 
 
-def get_cli_state() -> Optional[MarimoCLIState]:
+def get_cli_state() -> MarimoCLIState:
     config_reader = ConfigReader.for_filename(FILE_NAME)
-    if not config_reader:
-        # Couldn't find home directory, so do nothing
-        return None
-
     # Load the state file or create a default state if it doesn't exist
     state = config_reader.read_toml(MarimoCLIState, fallback=MarimoCLIState())
     return state
@@ -30,7 +27,4 @@ def get_cli_state() -> Optional[MarimoCLIState]:
 
 def write_cli_state(state: MarimoCLIState) -> None:
     config_reader = ConfigReader.for_filename(FILE_NAME)
-    if not config_reader:
-        # Couldn't find home directory, so do nothing
-        return
     config_reader.write_toml(state)

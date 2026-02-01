@@ -16,11 +16,15 @@ import {
 } from "@/plugins/impl/anywidget/model";
 import { logNever } from "@/utils/assertNever";
 import { prettyError } from "@/utils/errors";
-import type { Base64String, JsonString } from "@/utils/json/base64";
+import {
+  type JsonString,
+  safeExtractSetUIElementMessageBuffers,
+} from "@/utils/json/base64";
 import { jsonParseWithSpecialChar } from "@/utils/json/json-parser";
 import { Logger } from "@/utils/Logger";
 import { reloadSafe } from "@/utils/reload-safe";
 import { useAlertActions } from "../alerts/state";
+import { cacheInfoAtom } from "../cache/requests";
 import type { CellId, UIElementId } from "../cells/ids";
 import { useRunsActions } from "../cells/runs";
 import { focusAndScrollCellOutputIntoView } from "../cells/scrollCellIntoView";
@@ -32,6 +36,7 @@ import type { ConnectionName } from "../datasets/engines";
 import {
   PreviewSQLTable,
   PreviewSQLTableList,
+  ValidateSQL,
 } from "../datasets/request-registry";
 import { useDatasetsActions } from "../datasets/state";
 import { UI_ELEMENT_REGISTRY } from "../dom/uiregistry";
@@ -79,14 +84,15 @@ export function useMarimoWebSocket(opts: {
   const { setLayoutData } = useLayoutActions();
   const [connection, setConnection] = useAtom(connectionAtom);
   const { addBanner } = useBannersActions();
-  const { addPackageAlert } = useAlertActions();
+  const { addPackageAlert, addStartupLog } = useAlertActions();
   const setKioskMode = useSetAtom(kioskModeAtom);
   const setCapabilities = useSetAtom(capabilitiesAtom);
   const runtimeManager = useRuntimeManager();
+  const setCacheInfo = useSetAtom(cacheInfoAtom);
 
   const handleMessage = (e: MessageEvent<JsonString<OperationMessage>>) => {
     const msg = jsonParseWithSpecialChar(e.data);
-    switch (msg.op) {
+    switch (msg.data.op) {
       case "reload":
         reloadSafe();
         return;
@@ -111,10 +117,15 @@ export function useMarimoWebSocket(opts: {
         const modelId = msg.data.model_id;
         const uiElement = msg.data.ui_element;
         const message = msg.data.message;
-        const buffers = (msg.data.buffers ?? []) as Base64String[];
+        const buffers = safeExtractSetUIElementMessageBuffers(msg.data);
 
         if (modelId && isMessageWidgetState(message)) {
-          handleWidgetMessage(modelId, message, buffers, MODEL_MANAGER);
+          handleWidgetMessage({
+            modelId,
+            msg: message,
+            buffers,
+            modelManager: MODEL_MANAGER,
+          });
         }
 
         if (uiElement) {
@@ -199,6 +210,12 @@ export function useMarimoWebSocket(opts: {
           kind: "installing",
         });
         return;
+      case "startup-logs":
+        addStartupLog({
+          content: msg.data.content,
+          status: msg.data.status,
+        });
+        return;
       case "query-params-append":
         queryParamHandlers.append(msg.data);
         return;
@@ -227,8 +244,17 @@ export function useMarimoWebSocket(opts: {
       case "sql-table-list-preview":
         PreviewSQLTableList.resolve(msg.data.request_id as RequestId, msg.data);
         return;
+      case "validate-sql-result":
+        ValidateSQL.resolve(msg.data.request_id as RequestId, msg.data);
+        return;
       case "secret-keys-result":
         SECRETS_REGISTRY.resolve(msg.data.request_id as RequestId, msg.data);
+        return;
+      case "cache-info-fetched":
+        setCacheInfo(msg.data);
+        return;
+      case "cache-cleared":
+        // Cache cleared, could refresh cache info if needed
         return;
       case "data-source-connections":
         addDataSourceConnection({
@@ -256,7 +282,7 @@ export function useMarimoWebSocket(opts: {
         setCellIds({ cellIds: msg.data.cell_ids as CellId[] });
         return;
       default:
-        logNever(msg);
+        logNever(msg.data);
     }
   };
 

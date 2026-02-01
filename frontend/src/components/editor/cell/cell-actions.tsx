@@ -56,7 +56,8 @@ const CellActionsDropdownInternal = (
   ref: React.Ref<CellActionsDropdownHandle>,
 ) => {
   const [open, setOpen] = useState(false);
-  const actions = useCellActionButtons({ cell: props });
+  const closePopover = () => setOpen(false);
+  const actions = useCellActionButtons({ cell: props, closePopover });
 
   // store the last focused element so we can restore it when the popover closes
   const restoreFocus = useRestoreFocus();
@@ -87,7 +88,7 @@ const CellActionsDropdownInternal = (
                         </div>
                       )}
                       <div className="flex-1">{action.label}</div>
-                      <div className="flex-shrink-0 text-sm">
+                      <div className="shrink-0 text-sm">
                         {action.hotkey && renderMinimalShortcut(action.hotkey)}
                         {action.rightElement}
                       </div>
@@ -107,7 +108,7 @@ const CellActionsDropdownInternal = (
                       key={action.label}
                       // Disable with classname instead of disabled prop
                       // otherwise the tooltip doesn't work
-                      className={cn(action.disabled && "!opacity-50")}
+                      className={cn(action.disabled && "opacity-50!")}
                       onSelect={() => {
                         if (action.disableClick || action.disabled) {
                           return;

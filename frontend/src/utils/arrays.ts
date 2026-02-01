@@ -55,7 +55,7 @@ export function arrayShallowEquals<T>(a: T[], b: T[]): boolean {
 export const Arrays = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   EMPTY: [] as any,
-  zip: <T, U>(a: T[], b: U[]): Array<[T, U]> => {
+  zip: <T, U>(a: T[], b: U[]): [T, U][] => {
     invariant(a.length === b.length, "Arrays must be the same length");
     return a.map((item, i) => [item, b[i]]);
   },
@@ -72,4 +72,58 @@ export function arrayToggle<T>(arr: T[], item: T): T[] {
   const result = [...arr];
   result.splice(index, 1);
   return result;
+}
+
+/**
+ * Unique by a key function.
+ */
+export function uniqueBy<T>(arr: T[], key: (item: T) => string): T[] {
+  const result = [];
+  const seen = new Set();
+  for (const item of arr) {
+    const k = key(item);
+    if (!seen.has(k)) {
+      seen.add(k);
+      result.push(item);
+    }
+  }
+  return result;
+}
+
+/**
+ * Unique by a key function, taking the last item for each key.
+ */
+export function uniqueByTakeLast<T>(arr: T[], key: (item: T) => string): T[] {
+  // Create a map of keys to items
+  const map = new Map<string, T>();
+  for (const item of arr) {
+    const k = key(item);
+    map.set(k, item);
+  }
+  return [...map.values()];
+}
+
+/**
+ * Get the next index in the list, wrapping around to the start or end if necessary.
+ * @param currentIndex - The current index, or null if there is no current index.
+ * @param listLength - The length of the list.
+ * @param direction - The direction to move in.
+ * @returns The next index.
+ */
+export function getNextIndex(
+  currentIndex: number | null,
+  listLength: number,
+  direction: "up" | "down",
+): number {
+  if (listLength === 0) {
+    return 0;
+  }
+
+  if (currentIndex === null) {
+    return direction === "up" ? 0 : listLength - 1;
+  }
+
+  return direction === "up"
+    ? (currentIndex + 1) % listLength
+    : (currentIndex - 1 + listLength) % listLength;
 }

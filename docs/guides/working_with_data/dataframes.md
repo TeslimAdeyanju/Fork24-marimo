@@ -46,18 +46,42 @@ df
 import polars as pl
 
 df = pl.read_json(
-    "https://raw.githubusercontent.com/vega/vega-datasets/master/data/cars.json"
+"https://raw.githubusercontent.com/vega/vega-datasets/master/data/cars.json"
 )
 df
 ```
 
 ///
 
+/// tab | live example
+
+/// marimo-embed
+    size: large
+
+```python
+@app.cell
+def __():
+    import pandas as pd
+
+    pd.read_json(
+    "https://raw.githubusercontent.com/vega/vega-datasets/master/data/cars.json"
+    )
+    return
+```
+
+///
+
+///
+
+
 To opt out of the rich dataframe viewer, use [`mo.plain`][marimo.plain]:
 
 /// tab | pandas
 
 ```python
+import pandas as pd
+import marimo as mo
+
 df = pd.read_json(
 "https://raw.githubusercontent.com/vega/vega-datasets/master/data/cars.json"
 )
@@ -69,11 +93,35 @@ mo.plain(df)
 /// tab | polars
 
 ```python
+import polars as pl
+import marimo as mo
+
 df = pl.read_json(
 "https://raw.githubusercontent.com/vega/vega-datasets/master/data/cars.json"
 )
 mo.plain(df)
 ```
+
+///
+
+/// tab | live example
+
+/// marimo-embed
+    size: large
+
+```python
+@app.cell
+def __():
+    import pandas as pd
+
+    df = pd.read_json(
+    "https://raw.githubusercontent.com/vega/vega-datasets/master/data/cars.json"
+    )
+    mo.plain(df)
+    return
+```
+
+///
 
 ///
 
@@ -91,6 +139,15 @@ notebook.
 <video autoplay muted loop playsinline width="100%" height="100%" align="center" src="/_static/docs-dataframe-transform.webm">
 </video>
 <figcaption>Build transformations using a GUI</figcaption>
+</figure>
+</div>
+
+The transformations you apply will turn into code which is accessible via the "code" tab. 
+
+<div align="center">
+<figure>
+<img src="/_static/docs-dataframe-transform-code.png"/>
+<figcaption>Copy the code of the transformation</figcaption>
 </figure>
 </div>
 
@@ -114,6 +171,7 @@ transformed_df.value
 
 ///
 
+
 /// tab | polars
 
 ```python
@@ -134,12 +192,33 @@ transformed_df.value
 
 ///
 
-<div align="center">
-<figure>
-<img src="/_static/docs-dataframe-transform-code.png"/>
-<figcaption>Copy the code of the transformation</figcaption>
-</figure>
-</div>
+
+/// tab | live example 
+
+/// marimo-embed
+    size: large
+
+```python
+@app.cell
+def __():
+    import pandas as pd
+
+    df = pd.DataFrame({"person": ["Alice", "Bob", "Charlie"], "age": [20, 30, 40]})
+    transformed_df = mo.ui.dataframe(df)
+    transformed_df
+    return
+
+@app.cell
+def __():
+    transformed_df.value
+
+    return
+```
+
+///
+
+///
+
 
 ### Custom filters
 
@@ -169,6 +248,7 @@ mo.ui.table(filtered_df)
 /// tab | polars
 
 ```python
+# Cell 1
 import marimo as mo
 import polars as pl
 
@@ -192,6 +272,37 @@ mo.ui.table(filtered_df)
 
 ///
 
+/// tab | live example
+
+
+/// marimo-embed
+    size: large
+
+```python
+@app.cell
+def __():
+    import pandas as pd
+
+    df = pd.DataFrame({"person": ["Alice", "Bob", "Charlie"], "age": [20, 30, 40]})
+    return
+
+@app.cell
+def __():
+    age_filter = mo.ui.slider(start=0, stop=100, value=50, label="Max age")
+    age_filter
+    return
+
+@app.cell
+def __():
+    filtered_df = df[df["age"] < age_filter.value]
+    mo.ui.table(filtered_df)
+    return
+```
+
+///
+
+///
+
 ## Select dataframe rows {#selecting-dataframes}
 
 Display dataframes as interactive, [selectable charts](plotting.md) using
@@ -208,6 +319,7 @@ dataframe_.
 <figcaption>Select rows in a table, get them back as a dataframe</figcaption>
 </figure>
 </div>
+
 
 /// tab | pandas
 
@@ -228,6 +340,7 @@ table.value
 
 ///
 
+
 /// tab | polars
 
 ```python
@@ -247,7 +360,34 @@ table.value
 
 ///
 
-## Dataframe panels
+
+/// tab | live example
+
+/// marimo-embed
+    size: large
+
+```python
+@app.cell
+def __():
+    import pandas as pd
+
+    df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+    table = mo.ui.table(df, selection="multi")
+    table
+    return
+
+@app.cell
+def __():
+    table.value
+    return
+```
+
+///
+
+///
+
+
+## Dataframe panels {#dataframe-panels}
 
 Dataframe outputs in marimo come with several panels to help you visualize, explore, and page through your data interactively. These panels are accessible via toggles at the bottom-left of a dataframe output. If you need further control, after opening a panel you can
 
@@ -258,7 +398,7 @@ Dataframe outputs in marimo come with several panels to help you visualize, expl
 
     Toggles are visible when editing notebooks (with `marimo edit ...`) but not when running notebooks as apps (with `marimo run ...`), except for the row viewer which is available in both.
 
-### Row viewer panel
+### Row viewer panel {#row-viewer-panel}
 
 <div align="center">
 <figure>
@@ -273,7 +413,7 @@ To inspect individual rows, open the **row viewer**. This presents a vertical vi
 - **Use arrow keys** (`←` `→`) to navigate between rows
 - **Click** on any row in the dataframe to view its data in the panel
 
-### Column explorer panel
+### Column explorer panel {#column-explorer-panel}
 
 <div align="center">
 <figure>
@@ -292,11 +432,30 @@ import altair
 altair.data_transformers.enable("vegafusion")
 ```
 
-### Chart builder
+### Chart builder {#chart-builder}
 
 The chart builder toggle lets you rapidly develop charts using a GUI, while also generating Python code to insert in your notebook. Refer to the [chart builder guide](plotting.md#chart-builder) for more details.
 
-## Example notebook
+## Preferences {#preferences}
+
+When you run a SQL cell in marimo, you can get the output returned as a dataframe. If you have a preference for a specific dataframe library as a default you can configure the "default SQL output" in the user settings by going to the "Runtime" tab.
+
+
+<div align="center">
+<figure>
+<img src="/_static/docs-dataframe-default-setting.png"/>
+<figcaption>Configure the default SQL output</figcaption>
+</figure>
+</div>
+
+Alternatively you can also use the [marimo configuration file](/guides/configuration/#user-configuration) to configure the default SQL output. 
+
+```toml
+[runtime]
+default_sql_output = "native"
+```
+
+## Example notebook {#example-notebook}
 
 For a comprehensive example of using Polars with marimo, check out our [Polars example notebook](https://github.com/marimo-team/marimo/blob/main/examples/third_party/polars/polars_example.py).
 

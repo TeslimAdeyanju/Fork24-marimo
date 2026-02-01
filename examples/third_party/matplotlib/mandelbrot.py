@@ -9,44 +9,44 @@
 
 import marimo
 
-__generated_with = "0.8.19"
+__generated_with = "0.17.4"
 app = marimo.App()
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md("""# The Mandelbrot Set""")
+def _(mo):
+    mo.md("""
+    # The Mandelbrot Set
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md(
-        r"""
-        This program computes uses an iterative algorithm to visualize the
-        [_Mandelbrot set_](https://mathworld.wolfram.com/MandelbrotSet.html),
-        the set of complex numbers $c$ for which the sequence defined by the
-        iteration
+def _(mo):
+    mo.md(r"""
+    This program computes uses an iterative algorithm to visualize the
+    [_Mandelbrot set_](https://mathworld.wolfram.com/MandelbrotSet.html),
+    the set of complex numbers $c$ for which the sequence defined by the
+    iteration
 
-        \[
-        z_n = z_{n-1}^2 + c, \quad z_0 = 0
-        \]
+    \[
+    z_n = z_{n-1}^2 + c, \quad z_0 = 0
+    \]
 
-        is bounded in absolute value.
+    is bounded in absolute value.
 
 
-        In the visualization, every point not in the set is colored by the
-        number of iterations the algorithm required to disprove its membership in
-        the set. In any iteration, points in the darkest region may
-        be in the computed set; once the number of iterations is very high, we
-        can be confident that the dark region is the desired Mandelbrot set.
-        """
-    )
+    In the visualization, every point not in the set is colored by the
+    number of iterations the algorithm required to disprove its membership in
+    the set. In any iteration, points in the darkest region may
+    be in the computed set; once the number of iterations is very high, we
+    can be confident that the dark region is the desired Mandelbrot set.
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def __(mo, n_max):
+def _(mo, n_max):
     mo.md(
         f"""
         You can play with the number of iterations to see when points are 
@@ -59,7 +59,7 @@ def __(mo, n_max):
 
 
 @app.cell(hide_code=True)
-def __(mo, reset_plot_scale, x_offset, y_offset, zoom):
+def _(mo, reset_plot_scale, x_offset, y_offset, zoom):
     mo.md(
         f"""
         **Plot controls.**
@@ -75,7 +75,7 @@ def __(mo, reset_plot_scale, x_offset, y_offset, zoom):
 
 
 @app.cell
-def __(compute_mandelbrot, n_max, x_offset, y_offset, zoom):
+def _(compute_mandelbrot, n_max, x_offset, y_offset, zoom):
     compute_mandelbrot(n_max.value, 2., 601, 401,
                        zoom=zoom.value,
                        x_offset=x_offset.value,
@@ -84,19 +84,19 @@ def __(compute_mandelbrot, n_max, x_offset, y_offset, zoom):
 
 
 @app.cell
-def __(mo):
+def _(mo):
     n_max = mo.ui.slider(2, 256, step=1, value=30)
     return (n_max,)
 
 
 @app.cell
-def __(mo):
+def _(mo):
     reset_plot_scale = mo.ui.button(label="Click to reset")
     return (reset_plot_scale,)
 
 
 @app.cell
-def __(mo, reset_plot_scale):
+def _(mo, reset_plot_scale):
     reset_plot_scale
 
     zoom = mo.ui.slider(1, 10, step=0.1)
@@ -106,7 +106,7 @@ def __(mo, reset_plot_scale):
 
 
 @app.cell
-def __(np, plt):
+def _(np, plt):
     import functools
 
     @functools.cache
@@ -135,18 +135,18 @@ def __(np, plt):
         )
         plt.colorbar()
         return plt.gca()
-    return compute_mandelbrot, functools
+    return (compute_mandelbrot,)
 
 
 @app.cell
-def __():
+def _():
     import numpy as np
     import matplotlib.pyplot as plt
     return np, plt
 
 
 @app.cell
-def __():
+def _():
     import marimo as mo
     return (mo,)
 

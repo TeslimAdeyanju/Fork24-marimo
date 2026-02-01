@@ -31,13 +31,14 @@ export const SearchBar = ({
     onSearch(debouncedSearch);
   }, [debouncedSearch, onSearch]);
 
-  useEffect(() => {
-    if (hidden) {
-      setInternalValue("");
-    } else {
-      ref.current?.focus();
-    }
-  }, [hidden]);
+  if (!hidden) {
+    ref.current?.focus();
+  }
+
+  // Reset internal value when hidden becomes true
+  if (hidden && internalValue !== "") {
+    setInternalValue("");
+  }
 
   return (
     <div
@@ -50,7 +51,7 @@ export const SearchBar = ({
       <input
         type="text"
         ref={ref}
-        className="w-full h-full border-none bg-transparent focus:outline-none text-sm"
+        className="w-full h-full border-none bg-transparent focus:outline-hidden text-sm"
         value={internalValue}
         onKeyDown={(e) => {
           if (e.key === "Escape") {

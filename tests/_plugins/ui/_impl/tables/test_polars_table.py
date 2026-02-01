@@ -3,14 +3,17 @@ from __future__ import annotations
 import datetime
 import json
 import unittest
+from enum import Enum
 from math import isnan
 from typing import Any
 
-import narwhals.stable.v1 as nw
+import narwhals.stable.v2 as nw
 import pytest
 
 from marimo._data.models import ColumnStats
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._output.data.data import BIGINT_KEY
+from marimo._plugins.ui._impl.table import SortArgs
 from marimo._plugins.ui._impl.tables.format import FormatMapping
 from marimo._plugins.ui._impl.tables.polars_table import (
     PolarsTableManagerFactory,
@@ -323,7 +326,7 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
             ("I", ("string", "str")),
             ("J", ("string", "str")),
             ("K", ("date", "date")),
-            ("L", ("time", "Time")),
+            ("L", ("time", "time")),
         ]
         assert (
             self.factory.create()(complex_data).get_field_types()
@@ -400,6 +403,7 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
             mean=2.0,
             median=2.0,
             std=1.0,
+            unique=3,
             p5=1.0,
             p25=2.0,
             p75=3.0,
@@ -457,7 +461,9 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
             assert complex_data.get_stats(column) is not None
 
     def test_sort_values(self) -> None:
-        sorted_df = self.manager.sort_values("A", descending=True).data
+        sorted_df = self.manager.sort_values(
+            [SortArgs(by="A", descending=True)]
+        ).data
         expected_df = self.data.sort("A", descending=True)
         assert assert_frame_equal(sorted_df, expected_df)
 
@@ -830,7 +836,9 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
 
         df = pl.DataFrame({"A": [3, 1, None, 2]})
         manager = self.factory.create()(df)
-        sorted_manager = manager.sort_values("A", descending=True)
+        sorted_manager = manager.sort_values(
+            [SortArgs(by="A", descending=True)]
+        )
         assert sorted_manager.data["A"].to_list()[:-1] == [
             3.0,
             2.0,
@@ -840,7 +848,9 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
         assert last is None or isnan(last)
 
         # ascending
-        sorted_manager = manager.sort_values("A", descending=False)
+        sorted_manager = manager.sort_values(
+            [SortArgs(by="A", descending=False)]
+        )
         assert sorted_manager.data["A"].to_list()[:-1] == [
             1.0,
             2.0,
@@ -875,7 +885,7 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
             "datetime",
             "datetime[μs]",
         )
-        assert manager.get_field_type("time_col") == ("time", "Time")
+        assert manager.get_field_type("time_col") == ("time", "time")
 
     @pytest.mark.skipif(
         not DependencyManager.pillow.has(), reason="pillow not installed"
@@ -953,49 +963,13 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
         assert json_data[0]["A"] == 20
         assert json_data[0]["B"] == -20
 
-        # Large integers should be converted to strings
-        assert json_data[1]["A"] == "9007199254740992"
-        assert json_data[1]["B"] == "-9007199254740992"
+        # Large integers should be converted to objects
+        assert json_data[1]["A"] == {BIGINT_KEY: "9007199254740992"}
+        assert json_data[1]["B"] == {BIGINT_KEY: "-9007199254740992"}
 
-    def test_to_json_enum_list(self) -> None:
-        import polars as pl
-
-        data = {"A": [["A", "B", "C"], ["A", "B", "C"], ["A", "B", "C"]]}
-
-        data_enum = pl.DataFrame(
-            data, schema={"A": pl.List(pl.Enum(categories=["A", "B", "C"]))}
-        )
-        manager = self.factory.create()(data_enum)
-        json_data = json.loads(manager.to_json())
-        assert json_data[0]["A"] == ["A", "B", "C"]
-        assert json_data[1]["A"] == ["A", "B", "C"]
-        assert json_data[2]["A"] == ["A", "B", "C"]
-
-        data_categorical = pl.DataFrame(
-            data, schema={"A": pl.List(pl.Categorical())}
-        )
-        manager = self.factory.create()(data_categorical)
-        json_data = json.loads(manager.to_json())
-        assert json_data[0]["A"] == ["A", "B", "C"]
-        assert json_data[1]["A"] == ["A", "B", "C"]
-        assert json_data[2]["A"] == ["A", "B", "C"]
-
-    def test_to_json_enum_list_not_supported(self) -> None:
-        # When this is supported, we can remove the casting to string
-        import polars as pl
-
-        data = {"A": [["A", "B", "C"], ["A", "B", "C"], ["A", "B", "C"]]}
-
-        data_enum = pl.DataFrame(
-            data, schema={"A": pl.List(pl.Enum(categories=["A", "B", "C"]))}
-        )
-        with pytest.raises(pl.exceptions.PanicException):
-            data_enum.write_json()
-
-        data_list = pl.DataFrame(data, schema={"A": pl.List(pl.Categorical())})
-        with pytest.raises(pl.exceptions.PanicException):
-            data_list.write_json()
-
+    @pytest.mark.xfail(
+        reason="Polars does not support writing binary data to JSON"
+    )
     def test_to_json_binary(self) -> None:
         # Remove casting to string once binary is supported
         import polars as pl
@@ -1008,5 +982,49 @@ class TestPolarsTableManagerFactory(unittest.TestCase):
             }
         )
 
-        with pytest.raises(pl.exceptions.PanicException):
-            data.write_json()
+        data.write_json()
+
+    def test_to_json_enum_list_supported(self) -> None:
+        import polars as pl
+
+        data = {"A": [["A", "B", "C"], ["A", "B", "C"], ["A", "B", "C"]]}
+
+        data_enum = pl.DataFrame(
+            data, schema={"A": pl.List(pl.Enum(categories=["A", "B", "C"]))}
+        )
+        data_enum.write_json()
+
+        data_list = pl.DataFrame(data, schema={"A": pl.List(pl.Categorical())})
+        data_list.write_json()
+
+    @pytest.mark.xfail(
+        reason="Polars does not properly order sliced data to json when enums in list"
+    )
+    def test_failing_enums_list(self) -> None:
+        import polars as pl
+
+        class MyEnum(Enum):
+            A = 1
+            B = 2
+            C = 3
+            D = 4
+
+        # Create 10 rows cycling through enum values B, C, D, A...
+        enum_names = [e.name for e in MyEnum]
+        rows = [
+            {"value": [enum_names[i % len(enum_names)]]} for i in range(1, 11)
+        ]
+
+        expected_first_five = '[{"value":["B"]},{"value":["C"]},{"value":["D"]},{"value":["A"]},{"value":["B"]}]'
+        expected_second_five = '[{"value":["C"]},{"value":["D"]},{"value":["A"]},{"value":["B"]},{"value":["C"]}]'
+
+        # Test without schema - works fine
+        df = pl.DataFrame(rows)
+        assert df[0:5].write_json() == expected_first_five
+        assert df[5:10].write_json() == expected_second_five
+
+        # Test with schema - second slice fails
+        schema = {"value": pl.List(pl.Enum(enum_names))}
+        df_schema = pl.DataFrame(rows, schema=schema)
+        assert df_schema[0:5].write_json() == expected_first_five
+        assert df_schema[5:10].write_json() == expected_second_five  # fails

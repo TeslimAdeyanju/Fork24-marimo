@@ -113,11 +113,9 @@ export const TransformPanel: React.FC<Props> = ({
     selectedTransform === undefined
       ? undefined
       : transforms[selectedTransform]?.type;
-  const selectedTransformSchema = TransformTypeSchema._def.options.find(
-    (option) => {
-      return getUnionLiteral(option)._def.value === selectedTransformType;
-    },
-  );
+  const selectedTransformSchema = TransformTypeSchema.options.find((option) => {
+    return getUnionLiteral(option).value === selectedTransformType;
+  });
 
   const effectiveColumns = useMemo(() => {
     const transformsBeforeSelected = transforms.slice(0, selectedTransform);
@@ -125,7 +123,9 @@ export const TransformPanel: React.FC<Props> = ({
   }, [columns, transforms, selectedTransform]);
 
   const handleAddTransform = (transform: z.ZodType) => {
-    const next: TransformType = getDefaults(transform);
+    const next: TransformType = getDefaults(
+      transform as z.ZodType<TransformType>,
+    );
     const nextIdx = transformsField.fields.length;
     transformsField.append(next);
     setSelectedTransform(nextIdx);
@@ -162,7 +162,7 @@ export const TransformPanel: React.FC<Props> = ({
               />
             )}
             {(selectedTransform === undefined || !selectedTransformSchema) && (
-              <div className="flex flex-col items-center justify-center flex-grow gap-3">
+              <div className="flex flex-col items-center justify-center grow gap-3">
                 <MousePointerSquareDashedIcon className="w-8 h-8  text-muted-foreground" />
                 <AddTransformDropdown onAdd={handleAddTransform}>
                   <Button
@@ -199,7 +199,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   return (
     <div className="flex flex-col overflow-y-hidden w-[180px] shadow-xs h-full">
-      <div className="flex flex-col overflow-y-auto flex-grow">
+      <div className="flex flex-col overflow-y-auto grow">
         {items.map((item, idx) => {
           return (
             <div
@@ -215,7 +215,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 },
               )}
             >
-              <div className="flex-grow text-ellipsis">
+              <div className="grow text-ellipsis">
                 {Strings.startCase(item.type)}
               </div>
               <Trash2Icon
@@ -229,7 +229,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           );
         })}
       </div>
-      <div className="flex flex-row flex-shrink-0">
+      <div className="flex flex-row shrink-0">
         <AddTransformDropdown onAdd={onAdd}>
           <Button
             data-testid="marimo-plugin-data-frames-add-transform"
@@ -256,19 +256,19 @@ const AddTransformDropdown: React.FC<
         <DropdownMenuLabel>Add Transform</DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          {Object.values(TransformTypeSchema._def.options).map((type) => {
+          {Object.values(TransformTypeSchema.options).map((type) => {
             const literal = getUnionLiteral(type);
-            const Icon = ICONS[literal._def.value as TransformType["type"]];
+            const Icon = ICONS[literal.value as TransformType["type"]];
             return (
               <DropdownMenuItem
-                key={literal._def.value}
+                key={literal.value}
                 onSelect={(evt) => {
                   evt.stopPropagation();
                   onAdd(type);
                 }}
               >
                 <Icon className="w-3.5 h-3.5 mr-2" />
-                <span>{Strings.startCase(literal._def.value)}</span>
+                <span>{Strings.startCase(literal.value)}</span>
               </DropdownMenuItem>
             );
           })}

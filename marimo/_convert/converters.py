@@ -20,8 +20,13 @@ class MarimoConverterIntermediate:
 
         return convert_from_ir_to_notebook_v1(self.ir)
 
-    def to_markdown(self) -> str:
-        raise NotImplementedError("Not implemented")
+    def to_markdown(self, filename: str | None = None) -> str:
+        """Convert to markdown format."""
+        from marimo._server.export.exporter import Exporter
+
+        exporter = Exporter()
+        generated_contents, _ = exporter.export_as_md(self.ir, filename)
+        return generated_contents
 
     def to_py(self) -> str:
         """Convert to python format."""
@@ -48,6 +53,53 @@ class MarimoConvert:
 
         ir = parse_notebook(source) or EMPTY_NOTEBOOK_SERIALIZATION
         return MarimoConverterIntermediate(ir)
+
+    @staticmethod
+    def from_non_marimo_python_script(
+        source: str,
+        aggressive: bool = False,
+    ) -> MarimoConverterIntermediate:
+        """Convert from a non-marimo Python script to marimo notebook.
+
+        This should only be used when the .py file is not already a valid
+        marimo notebook.
+
+        Args:
+            source: Unknown Python script source code string
+            aggressive: If True, will attempt to convert aggressively,
+                        turning even invalid text into a notebook.
+        """
+        from marimo._convert.non_marimo_python_script import (
+            convert_non_marimo_python_script_to_notebook_ir,
+            convert_non_marimo_script_to_notebook_ir,
+        )
+
+        if aggressive:
+            notebook_ir = convert_non_marimo_script_to_notebook_ir(source)
+        else:
+            notebook_ir = convert_non_marimo_python_script_to_notebook_ir(
+                source
+            )
+        return MarimoConvert.from_ir(notebook_ir)
+
+    @staticmethod
+    def from_plain_text(
+        source: str,
+    ) -> MarimoConverterIntermediate:
+        """Converts plain text into a single celled marimo notebook.
+
+        Used for cases with syntax errors or unparsable code.
+
+        Args:
+            source: Unknown source code string
+        """
+        from marimo._convert.non_marimo_python_script import (
+            convert_script_block_to_notebook_ir,
+        )
+
+        return MarimoConvert.from_ir(
+            convert_script_block_to_notebook_ir(source)
+        )
 
     @staticmethod
     def from_md(source: str) -> MarimoConverterIntermediate:

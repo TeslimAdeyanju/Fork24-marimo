@@ -3,7 +3,7 @@ name: GitHub Pages
 on:
   # Weekly
   schedule:
-    - cron: '0 0 * * 0' # Run at midnight UTC on Sunday
+    - cron: "0 0 * * 0" # Run at midnight UTC on Sunday
 
   # Allow manual trigger
   workflow_dispatch: {}
@@ -16,8 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      pull-requests: write
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +24,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🐍 Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           python-version: 3.12

@@ -1,6 +1,7 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 import { describe, expect, it, vi } from "vitest";
 import { ColumnChartSpecModel } from "../column-summary/chart-spec-model";
+import { calculateBinStep } from "../column-summary/utils";
 import type {
   BinValues,
   ColumnHeaderStats,
@@ -60,7 +61,7 @@ describe("ColumnChartSpecModel", () => {
 
   it("should create an instance", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
@@ -77,7 +78,7 @@ describe("ColumnChartSpecModel", () => {
 
   it("should return header summary with spec when includeCharts is true", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
@@ -92,7 +93,7 @@ describe("ColumnChartSpecModel", () => {
 
   it("should return header summary without spec when includeCharts is false", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
@@ -105,17 +106,17 @@ describe("ColumnChartSpecModel", () => {
     expect(numberSummary.spec).toBeUndefined();
   });
 
-  it("should return null spec for string and unknown types", () => {
+  it("should return null spec for unknown types", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
       mockValueCounts,
       { includeCharts: true },
     );
-    const stringSummary = model.getHeaderSummary("string");
-    expect(stringSummary.spec).toBeNull();
+    const unknownSummary = model.getHeaderSummary("unknown");
+    expect(unknownSummary.spec).toBeNull();
   });
 
   it("should handle special characters in column names", () => {
@@ -125,11 +126,18 @@ describe("ColumnChartSpecModel", () => {
     const specialStats: Record<ColumnName, Partial<ColumnHeaderStats>> = {
       "column.with[special:chars]": { min: "2023-01-01", max: "2023-12-31" },
     };
+    const specialBinValues: Record<ColumnName, BinValues> = {
+      ...mockBinValues,
+      "column.with[special:chars]": [
+        { bin_start: "2023-01-01", bin_end: "2023-06-01", count: 10 },
+        { bin_start: "2023-06-01", bin_end: "2023-12-31", count: 20 },
+      ],
+    };
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       specialFieldTypes,
       specialStats,
-      mockBinValues,
+      specialBinValues,
       mockValueCounts,
       { includeCharts: true },
     );
@@ -138,17 +146,17 @@ describe("ColumnChartSpecModel", () => {
     expect(
       // @ts-expect-error layer should be available
       (summary.spec?.layer[0].encoding?.x as { field: string })?.field,
-    ).toBe("column\\.with\\[special\\:chars\\]");
+    ).toBe("bin_start");
   });
 
-  it("should expect bin values to be used for number and integer columns when feat flag is true", () => {
+  it("should expect bin values to be used for number and integer columns", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
       mockValueCounts,
-      { includeCharts: true, usePreComputedValues: true },
+      { includeCharts: true },
     );
     const summary = model.getHeaderSummary("number");
     expect(summary.spec).toBeDefined();
@@ -170,14 +178,14 @@ describe("ColumnChartSpecModel", () => {
     expect(summary2.spec?.data?.values).toEqual(mockBinValues.integer);
   });
 
-  it("should handle datetime bin values when feat flag is true", () => {
+  it("should handle datetime bin values", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
       mockValueCounts,
-      { includeCharts: true, usePreComputedValues: true },
+      { includeCharts: true },
     );
 
     const summary = model.getHeaderSummary("datetime");
@@ -185,9 +193,6 @@ describe("ColumnChartSpecModel", () => {
     // @ts-expect-error data.values should be available
     expect(summary.spec?.data?.values).toEqual(mockBinValues.datetime);
 
-    // Expect hconcat since there are nulls
-    // @ts-expect-error hconcat should be available
-    expect(summary.spec?.hconcat).toBeDefined();
     expect(summary.spec).toMatchSnapshot();
 
     // Test again without the nulls
@@ -196,12 +201,12 @@ describe("ColumnChartSpecModel", () => {
       datetime: { min: "2023-01-01", max: "2023-12-31" },
     };
     const model2 = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats2,
       mockBinValues,
       mockValueCounts,
-      { includeCharts: true, usePreComputedValues: true },
+      { includeCharts: true },
     );
     const summary2 = model2.getHeaderSummary("datetime");
     expect(summary2.spec).toBeDefined();
@@ -211,14 +216,14 @@ describe("ColumnChartSpecModel", () => {
     expect(summary2.spec?.hconcat).toBeUndefined();
   });
 
-  it("should handle boolean stats when feat flag is true", () => {
+  it("should handle boolean stats", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
       mockValueCounts,
-      { includeCharts: true, usePreComputedValues: true },
+      { includeCharts: true },
     );
     const summary = model.getHeaderSummary("boolean");
     expect(summary.spec).toBeDefined();
@@ -233,14 +238,14 @@ describe("ColumnChartSpecModel", () => {
     expect(summary.spec).toMatchSnapshot();
   });
 
-  it("should handle string value counts when feat flag is true", () => {
+  it("should handle string value counts", () => {
     const model = new ColumnChartSpecModel(
-      mockData,
+      [],
       mockFieldTypes,
       mockStats,
       mockBinValues,
       mockValueCounts,
-      { includeCharts: true, usePreComputedValues: true },
+      { includeCharts: true },
     );
     const summary = model.getHeaderSummary("string");
     expect(summary.spec).toBeDefined();
@@ -261,7 +266,7 @@ describe("ColumnChartSpecModel", () => {
     expect(summary.spec).toMatchSnapshot();
   });
 
-  describe("snapshot", () => {
+  describe("snapshot with legacy data spec", () => {
     const fieldTypes: FieldTypes = {
       ...mockFieldTypes,
       a: "number",
@@ -436,6 +441,271 @@ describe("ColumnChartSpecModel", () => {
       expect(summary.spec).toBeDefined();
       // @ts-expect-error accessing internal dataSpec
       expect(model.dataSpec?.values).toEqual(arrayData);
+    });
+  });
+});
+
+describe("calculateBinStep", () => {
+  describe("numeric data", () => {
+    it("should calculate proper step for numeric data", () => {
+      const values: BinValues = [
+        { bin_start: 0, bin_end: 10, count: 5 },
+        { bin_start: 10, bin_end: 20, count: 8 },
+        { bin_start: 20, bin_end: 30, count: 12 },
+        { bin_start: 30, bin_end: 40, count: 6 },
+        { bin_start: 40, bin_end: 50, count: 3 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(10); // Range is 50, 5 bins, so 50/5 = 10
+    });
+
+    it("should handle zero range", () => {
+      const values: BinValues = [
+        { bin_start: 5, bin_end: 5, count: 10 },
+        { bin_start: 5, bin_end: 5, count: 15 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(1); // Minimum step size when range is 0
+    });
+
+    it("should handle very small ranges", () => {
+      const values: BinValues = [
+        { bin_start: 0.001, bin_end: 0.002, count: 5 },
+        { bin_start: 0.002, bin_end: 0.003, count: 8 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(1); // Minimum step size when calculated step is too small
+    });
+
+    it("should handle very large ranges", () => {
+      const values: BinValues = [
+        { bin_start: 0, bin_end: 1_000_000, count: 5 },
+        { bin_start: 1_000_000, bin_end: 2_000_000, count: 8 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(1_000_000); // Range is 2_000_000, 2 bins, so 2_000_000/2 = 1_000_000
+    });
+
+    it("should use actual number of bins", () => {
+      const values: BinValues = [
+        { bin_start: 0, bin_end: 10, count: 5 },
+        { bin_start: 10, bin_end: 20, count: 8 },
+        { bin_start: 20, bin_end: 30, count: 12 },
+        { bin_start: 30, bin_end: 40, count: 6 },
+        { bin_start: 40, bin_end: 50, count: 3 },
+        { bin_start: 50, bin_end: 60, count: 7 },
+        { bin_start: 60, bin_end: 70, count: 9 },
+        { bin_start: 70, bin_end: 80, count: 4 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(10); // Range is 80, 8 bins, so 80/8 = 10
+    });
+  });
+
+  describe("string date data", () => {
+    it("should calculate proper step for string dates", () => {
+      const values: BinValues = [
+        { bin_start: "2023-01-01", bin_end: "2023-01-02", count: 5 },
+        { bin_start: "2023-01-02", bin_end: "2023-01-03", count: 8 },
+        { bin_start: "2023-01-03", bin_end: "2023-01-04", count: 12 },
+        { bin_start: "2023-01-04", bin_end: "2023-01-05", count: 6 },
+      ];
+
+      const step = calculateBinStep(values);
+      const oneDayMs = 24 * 60 * 60 * 1000;
+      expect(step).toBe(oneDayMs); // 4 days range, 4 bins, so 4 days / 4 = 1 day in ms
+    });
+
+    it("should handle datetime strings", () => {
+      const values: BinValues = [
+        {
+          bin_start: "2023-01-01 00:00:00",
+          bin_end: "2023-01-01 01:00:00",
+          count: 5,
+        },
+        {
+          bin_start: "2023-01-01 01:00:00",
+          bin_end: "2023-01-01 02:00:00",
+          count: 8,
+        },
+        {
+          bin_start: "2023-01-01 02:00:00",
+          bin_end: "2023-01-01 03:00:00",
+          count: 12,
+        },
+      ];
+
+      const step = calculateBinStep(values);
+      const oneHourMs = 60 * 60 * 1000;
+      expect(step).toBe(oneHourMs); // 3 hours range, 3 bins, so 3 hours / 3 = 1 hour in ms
+    });
+
+    it("should handle ISO datetime strings", () => {
+      const values: BinValues = [
+        {
+          bin_start: "2023-01-01T00:00:00Z",
+          bin_end: "2023-01-01T01:00:00Z",
+          count: 5,
+        },
+        {
+          bin_start: "2023-01-01T01:00:00Z",
+          bin_end: "2023-01-01T02:00:00Z",
+          count: 8,
+        },
+      ];
+
+      const step = calculateBinStep(values);
+      const oneHourMs = 60 * 60 * 1000;
+      expect(step).toBe(oneHourMs); // 2 hours range, 2 bins, so 2 hours / 2 = 1 hour in ms
+    });
+  });
+
+  describe("Date object data", () => {
+    it("should calculate proper step for Date objects", () => {
+      const values: BinValues = [
+        {
+          bin_start: new Date("2023-01-01"),
+          bin_end: new Date("2023-01-02"),
+          count: 5,
+        },
+        {
+          bin_start: new Date("2023-01-02"),
+          bin_end: new Date("2023-01-03"),
+          count: 8,
+        },
+        {
+          bin_start: new Date("2023-01-03"),
+          bin_end: new Date("2023-01-04"),
+          count: 12,
+        },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(24 * 60 * 60 * 1000); // 3 days range, 3 bins, so 3 days / 3 = 1 day in ms
+    });
+  });
+
+  describe("edge cases", () => {
+    it("should handle empty array", () => {
+      const values: BinValues = [];
+      const step = calculateBinStep(values);
+      expect(step).toBe(1);
+    });
+
+    it("should handle array with only null values", () => {
+      const values: BinValues = [
+        { bin_start: null, bin_end: null, count: 5 },
+        { bin_start: null, bin_end: null, count: 8 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(1);
+    });
+
+    it("should handle mixed null and valid values", () => {
+      const values: BinValues = [
+        { bin_start: null, bin_end: null, count: 5 },
+        { bin_start: 0, bin_end: 10, count: 8 },
+        { bin_start: 10, bin_end: 20, count: 12 },
+        { bin_start: null, bin_end: null, count: 6 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(10); // Range is 20, 2 valid bins, so 20/2 = 10
+    });
+
+    it("should handle single valid value", () => {
+      const values: BinValues = [{ bin_start: 5, bin_end: 15, count: 10 }];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(10); // Range is 10, 1 bin, so 10/1 = 10
+    });
+
+    it("should handle very small step sizes", () => {
+      const values: BinValues = [
+        { bin_start: 0.0001, bin_end: 0.0002, count: 5 },
+        { bin_start: 0.0002, bin_end: 0.0003, count: 8 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(1); // Minimum step size when calculated step is too small
+    });
+
+    it("should handle very large step sizes", () => {
+      const values: BinValues = [
+        { bin_start: 0, bin_end: 1_000_000, count: 5 },
+        { bin_start: 1_000_000, bin_end: 2_000_000, count: 8 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(1_000_000); // Range is 2_000_000, 2 bins, so 2_000_000/2 = 1_000_000
+    });
+
+    it("should handle single bin", () => {
+      const values: BinValues = [{ bin_start: 0, bin_end: 10, count: 5 }];
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(10); // Range is 10, 1 bin, so 10/1 = 10
+    });
+
+    it("should handle many bins", () => {
+      const values: BinValues = Array.from({ length: 100 }, (_, i) => ({
+        bin_start: i * 10,
+        bin_end: (i + 1) * 10,
+        count: Math.floor(Math.random() * 20) + 1,
+      }));
+
+      const step = calculateBinStep(values);
+      expect(step).toBe(10); // Range is 1000, 100 bins, so 1000/100 = 10
+    });
+  });
+
+  describe("data type consistency", () => {
+    it("should handle consistent numeric types", () => {
+      const values: BinValues = [
+        { bin_start: 0, bin_end: 10, count: 5 },
+        { bin_start: 10, bin_end: 20, count: 8 },
+        { bin_start: 20, bin_end: 30, count: 12 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(typeof step).toBe("number");
+      expect(step).toBe(10); // Range is 30, 3 bins, so 30/3 = 10
+    });
+
+    it("should handle consistent string date types", () => {
+      const values: BinValues = [
+        { bin_start: "2023-01-01", bin_end: "2023-01-02", count: 5 },
+        { bin_start: "2023-01-02", bin_end: "2023-01-03", count: 8 },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(typeof step).toBe("number");
+      expect(step).toBe(24 * 60 * 60 * 1000); // 2 days range, 2 bins, so 2 days / 2 = 1 day in ms
+    });
+
+    it("should handle consistent Date object types", () => {
+      const values: BinValues = [
+        {
+          bin_start: new Date("2023-01-01"),
+          bin_end: new Date("2023-01-02"),
+          count: 5,
+        },
+        {
+          bin_start: new Date("2023-01-02"),
+          bin_end: new Date("2023-01-03"),
+          count: 8,
+        },
+      ];
+
+      const step = calculateBinStep(values);
+      expect(typeof step).toBe("number");
+      expect(step).toBe(24 * 60 * 60 * 1000); // 2 days range, 2 bins, so 2 days / 2 = 1 day in ms
     });
   });
 });

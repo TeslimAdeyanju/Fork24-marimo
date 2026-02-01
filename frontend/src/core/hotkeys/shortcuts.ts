@@ -21,6 +21,23 @@ export function isPlatformMac() {
   return /mac/i.test(platform);
 }
 
+/**
+ * Check if the current platform is Windows
+ */
+export function isPlatformWindows() {
+  if (typeof window === "undefined") {
+    Logger.warn("isPlatformWindows() called without window");
+    return false;
+  }
+  // @ts-expect-error typescript does not have types for experimental userAgentData property
+  const platform = window.navigator.userAgentData
+    ? // @ts-expect-error typescript does not have types for experimental userAgentData property
+      window.navigator.userAgentData.platform
+    : window.navigator.platform;
+
+  return /win/i.test(platform);
+}
+
 type IKeyboardEvent = Pick<
   KeyboardEvent,
   "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey" | "code"
@@ -50,7 +67,17 @@ function areKeysPressed(keys: string[], e: IKeyboardEvent): boolean {
         satisfied &&= e.code === "Space";
         break;
       default:
-        satisfied &&= e.key.toLowerCase() === key;
+        // Handle digit keys specially when shift is pressed
+        // Shift+7 produces different characters across keyboards/platforms:
+        // - US keyboards: "&"
+        // - Some layouts: "7"
+        // Using e.code (physical key) instead of e.key (produced character)
+        // eslint-disable-next-line unicorn/prefer-ternary
+        if (/^\d$/.test(key) && e.shiftKey) {
+          satisfied &&= e.code === `Digit${key}`;
+        } else {
+          satisfied &&= e.key.toLowerCase() === key;
+        }
         break;
     }
 
@@ -104,4 +131,16 @@ export function parseShortcut(
   const separator = shortcut.includes("+") ? "+" : "-";
   const keys = shortcut.split(separator).map(normalizeKey);
   return (e: IKeyboardEvent) => areKeysPressed(keys, e);
+}
+
+export type Platform = "mac" | "windows" | "linux";
+
+export function resolvePlatform(): Platform {
+  if (isPlatformMac()) {
+    return "mac";
+  }
+  if (isPlatformWindows()) {
+    return "windows";
+  }
+  return "linux";
 }

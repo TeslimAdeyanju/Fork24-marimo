@@ -1,10 +1,10 @@
 /* Copyright 2024 Marimo. All rights reserved. */
-import { isPlatformMac } from "@/core/hotkeys/shortcuts";
+import { type Platform, resolvePlatform } from "@/core/hotkeys/shortcuts";
 import { Objects } from "@/utils/objects";
 
 export const NOT_SET: unique symbol = Symbol("NOT_SET");
 
-interface Hotkey {
+export interface Hotkey {
   name: string;
   /**
    * Grouping for the command palette and keyboard shortcuts page.
@@ -34,7 +34,7 @@ interface ResolvedHotkey {
   key: string;
 }
 
-type Platform = "mac" | "windows" | "linux";
+type ModKey = "Cmd" | "Ctrl";
 
 export type HotkeyGroup =
   | "Running Cells"
@@ -239,6 +239,18 @@ const DEFAULT_HOT_KEY = {
     group: "Editing",
     key: "F2",
   },
+  "cell.copyLineUp": {
+    name: "Copy line(s) up",
+    group: "Editing",
+    key: "Alt-Shift-ArrowUp",
+    editable: false,
+  },
+  "cell.copyLineDown": {
+    name: "Copy line(s) down",
+    group: "Editing",
+    key: "Alt-Shift-ArrowDown",
+    editable: false,
+  },
 
   // Markdown
   "markdown.bold": {
@@ -388,6 +400,14 @@ const DEFAULT_HOT_KEY = {
   },
 
   // Command mode (edit a cell, not the editor)
+  "command.vimEnterCommandMode": {
+    name: "Enter command mode (vim)",
+    group: "Command",
+    key: {
+      main: "Mod-Escape",
+      windows: "Shift-Escape",
+    },
+  },
   "command.createCellBefore": {
     name: "Create a cell before current cell",
     group: "Command",
@@ -423,22 +443,36 @@ export interface IHotkeyProvider {
   getHotkey(action: HotkeyAction): ResolvedHotkey;
 }
 
+interface HotkeyProviderOptions {
+  /**
+   * The target platform for the key provider.
+   *
+   * If `undefined`, the platform is detected at runtime.
+   * An explicit value is generally only provided in tests.
+   */
+  platform?: Platform;
+}
+
 export class HotkeyProvider implements IHotkeyProvider {
-  private mod: string;
+  private mod: ModKey;
   private platform: Platform;
 
-  static create(isMac?: boolean): HotkeyProvider {
-    return new HotkeyProvider(DEFAULT_HOT_KEY, isMac);
+  /**
+   * @param platform - See {@link HotkeyProviderOptions.platform}.
+   */
+  static create(platform?: Platform): HotkeyProvider {
+    return new HotkeyProvider(DEFAULT_HOT_KEY, { platform });
   }
 
-  constructor(
-    private hotkeys: Record<HotkeyAction, Hotkey>,
-    isMac?: boolean,
-  ) {
-    isMac = isMac ?? isPlatformMac();
+  private hotkeys: Record<HotkeyAction, Hotkey>;
 
-    this.mod = isMac ? "Cmd" : "Ctrl";
-    this.platform = isMac ? "mac" : "windows";
+  constructor(
+    hotkeys: Record<HotkeyAction, Hotkey>,
+    options: HotkeyProviderOptions = {},
+  ) {
+    this.hotkeys = hotkeys;
+    this.platform = options.platform ?? resolvePlatform();
+    this.mod = this.platform === "mac" ? "Cmd" : "Ctrl";
   }
 
   iterate(): HotkeyAction[] {
@@ -484,12 +518,14 @@ export class HotkeyProvider implements IHotkeyProvider {
 }
 
 export class OverridingHotkeyProvider extends HotkeyProvider {
+  private readonly overrides: Partial<Record<HotkeyAction, string | undefined>>;
+
   constructor(
-    private readonly overrides: Partial<
-      Record<HotkeyAction, string | undefined>
-    >,
+    overrides: Partial<Record<HotkeyAction, string | undefined>>,
+    options: HotkeyProviderOptions = {},
   ) {
-    super(DEFAULT_HOT_KEY);
+    super(DEFAULT_HOT_KEY, options);
+    this.overrides = overrides;
   }
 
   override getHotkey(action: HotkeyAction): ResolvedHotkey {

@@ -2,12 +2,12 @@
 
 import { z } from "zod";
 import { arrayMove } from "@/utils/arrays";
-import { NotebookScopedLocalStorage } from "@/utils/localStorage";
+import { NotebookScopedLocalStorage } from "@/utils/storage/typed";
 
 const BASE_KEY = "marimo:notebook-col-sizes";
 
 interface ColumnSizes {
-  widths: Array<number | "contentWidth">;
+  widths: (number | "contentWidth")[];
 }
 
 function initialState(): ColumnSizes {

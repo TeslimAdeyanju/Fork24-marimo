@@ -6,11 +6,9 @@ app = marimo.App()
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # My Notebook
-        """
-    )
+    mo.md(r"""
+    # My Notebook
+    """)
     return
 
 
@@ -22,12 +20,10 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        **Appendix**
-        - This is the end of the notebook
-        """
-    )
+    mo.md(r"""
+    **Appendix**
+    - This is the end of the notebook
+    """)
     return
 
 

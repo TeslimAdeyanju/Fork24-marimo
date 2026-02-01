@@ -1,10 +1,11 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 "use no memo";
 
-import type { Column } from "@tanstack/react-table";
+import type { Column, Table } from "@tanstack/react-table";
 import { capitalize } from "lodash-es";
 import { FilterIcon, MinusIcon, TextIcon, XIcon } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { useLocale } from "react-aria";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,6 +68,7 @@ interface DataTableColumnHeaderProps<TData, TValue>
   column: Column<TData, TValue>;
   header: React.ReactNode;
   calculateTopKRows?: CalculateTopKRows;
+  table?: Table<TData>;
 }
 
 export const DataTableColumnHeader = <TData, TValue>({
@@ -74,8 +76,10 @@ export const DataTableColumnHeader = <TData, TValue>({
   header,
   className,
   calculateTopKRows,
+  table,
 }: DataTableColumnHeaderProps<TData, TValue>) => {
   const [isFilterValueOpen, setIsFilterValueOpen] = useState(false);
+  const { locale } = useLocale();
 
   // No header
   if (!header) {
@@ -96,7 +100,7 @@ export const DataTableColumnHeader = <TData, TValue>({
         <DropdownMenuTrigger asChild={true}>
           <div
             className={cn(
-              "group flex items-center my-1 space-between w-full select-none gap-2 border hover:border-border border-transparent hover:bg-[var(--slate-3)] data-[state=open]:bg-[var(--slate-3)] data-[state=open]:border-border rounded px-1 -mx-1",
+              "group flex items-center my-1 space-between w-full select-none gap-2 border hover:border-border border-transparent hover:bg-(--slate-3) data-[state=open]:bg-(--slate-3) data-[state=open]:border-border rounded px-1 -mx-1",
               className,
             )}
             data-testid="data-table-sort-button"
@@ -115,11 +119,11 @@ export const DataTableColumnHeader = <TData, TValue>({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
           {renderDataType(column)}
-          {renderSorts(column)}
+          {renderSorts(column, table)}
           {renderCopyColumn(column)}
           {renderColumnPinning(column)}
           {renderColumnWrapping(column)}
-          {renderFormatOptions(column)}
+          {renderFormatOptions(column, locale)}
           <DropdownMenuSeparator />
           {renderMenuItemFilter(column)}
           {renderFilterByValues(column, setIsFilterValueOpen)}
@@ -278,7 +282,7 @@ const NullFilter = <TData, TValue>({
     >
       <SelectTrigger
         className={cn(
-          "border-border !shadow-none !ring-0 w-full mb-0.5",
+          "border-border shadow-none! ring-0! w-full mb-0.5",
           isNullOrNotNull && "mb-2",
         )}
       >
@@ -587,7 +591,7 @@ const PopoverFilterByValues = <TData, TValue>({
 
     dataTable = (
       <>
-        <Command className="text-sm outline-none" shouldFilter={false}>
+        <Command className="text-sm outline-hidden" shouldFilter={false}>
           <CommandInput
             placeholder="Search"
             autoFocus={true}
@@ -618,7 +622,7 @@ const PopoverFilterByValues = <TData, TValue>({
                 <CommandItem
                   key={rowIndex}
                   value={valueString}
-                  className="[&:not(:last-child)]:border-b rounded-none px-3"
+                  className="not-last:border-b rounded-none px-3"
                   onSelect={() => handleToggle(value)}
                 >
                   <Checkbox

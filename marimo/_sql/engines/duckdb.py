@@ -1,19 +1,26 @@
 # Copyright 2024 Marimo. All rights reserved.
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any, Literal, Optional, Union, cast
 
 from marimo import _loggers
 from marimo._data.get_datasets import get_databases_from_duckdb
 from marimo._data.models import Database, DataTable
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._runtime.context.types import (
+    ContextNotInitializedError,
+    get_context,
+)
 from marimo._sql.engines.types import InferenceConfig, SQLConnection
-from marimo._sql.utils import raise_df_import_error, wrapped_sql
+from marimo._sql.utils import convert_to_output, wrapped_sql
 from marimo._types.ids import VariableName
 
 LOGGER = _loggers.marimo_logger()
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import duckdb
 
 # Internal engine names
@@ -30,6 +37,24 @@ class DuckDBEngine(SQLConnection[Optional["duckdb.DuckDBPyConnection"]]):
     ) -> None:
         super().__init__(connection, engine_name)
 
+    @contextmanager
+    def _install_connection(
+        self, connection: duckdb.DuckDBPyConnection
+    ) -> Iterator[None]:
+        try:
+            ctx = get_context()
+        except ContextNotInitializedError:
+            execution_context = None
+        else:
+            execution_context = ctx.execution_context
+        mgr = (
+            execution_context.with_connection
+            if execution_context is not None
+            else nullcontext
+        )
+        with mgr(connection):
+            yield
+
     @property
     def source(self) -> str:
         return "duckdb"
@@ -37,6 +62,17 @@ class DuckDBEngine(SQLConnection[Optional["duckdb.DuckDBPyConnection"]]):
     @property
     def dialect(self) -> str:
         return "duckdb"
+
+    @staticmethod
+    def execute_and_return_relation(
+        query: str, params: Optional[list[Any]] = None
+    ) -> duckdb.DuckDBPyRelation:
+        """Execute a query and return a relation. Supports parameters."""
+        DependencyManager.duckdb.require("to execute sql")
+
+        import duckdb
+
+        return duckdb.sql(query, params=params)
 
     def execute(self, query: str) -> Any:
         relation = wrapped_sql(query, self._connection)
@@ -46,36 +82,13 @@ class DuckDBEngine(SQLConnection[Optional["duckdb.DuckDBPyConnection"]]):
             return None
 
         sql_output_format = self.sql_output_format()
-        if sql_output_format == "polars":
-            return relation.pl()
-        if sql_output_format == "lazy-polars":
-            return relation.pl().lazy()
-        if sql_output_format == "native":
-            return relation
-        if sql_output_format == "pandas":
-            return relation.df()
 
-        # Auto
-        if DependencyManager.polars.has():
-            import polars as pl
-
-            try:
-                return relation.pl()
-            except (
-                pl.exceptions.PanicException,
-                pl.exceptions.ComputeError,
-            ) as e:
-                LOGGER.warning("Failed to convert to polars. Reason: %s.", e)
-                DependencyManager.pandas.require("to convert this data")
-
-        if DependencyManager.pandas.has():
-            try:
-                return relation.df()
-            except Exception as e:
-                LOGGER.warning("Failed to convert dataframe", exc_info=e)
-                return None
-
-        raise_df_import_error("polars[pyarrow]")
+        return convert_to_output(
+            sql_output_format=sql_output_format,
+            to_polars=lambda: relation.pl(),
+            to_pandas=lambda: relation.df(),
+            to_native=lambda: relation,
+        )
 
     @staticmethod
     def is_compatible(var: Any) -> bool:
@@ -99,8 +112,11 @@ class DuckDBEngine(SQLConnection[Optional["duckdb.DuckDBPyConnection"]]):
         try:
             import duckdb
 
-            connection = self._connection or duckdb
-            row = connection.sql("SELECT CURRENT_DATABASE()").fetchone()
+            connection = cast(
+                duckdb.DuckDBPyConnection, self._connection or duckdb
+            )
+            with self._install_connection(connection):
+                row = connection.sql("SELECT CURRENT_DATABASE()").fetchone()
             if row is not None and row[0] is not None:
                 return str(row[0])
             return None
@@ -112,8 +128,11 @@ class DuckDBEngine(SQLConnection[Optional["duckdb.DuckDBPyConnection"]]):
         try:
             import duckdb
 
-            connection = self._connection or duckdb
-            row = connection.sql("SELECT CURRENT_SCHEMA()").fetchone()
+            connection = cast(
+                duckdb.DuckDBPyConnection, self._connection or duckdb
+            )
+            with self._install_connection(connection):
+                row = connection.sql("SELECT CURRENT_SCHEMA()").fetchone()
             if row is not None and row[0] is not None:
                 return str(row[0])
             return None
@@ -130,7 +149,13 @@ class DuckDBEngine(SQLConnection[Optional["duckdb.DuckDBPyConnection"]]):
     ) -> list[Database]:
         """Fetch all databases from the engine. At the moment, will fetch everything."""
         _, _, _ = include_schemas, include_tables, include_table_details
-        return get_databases_from_duckdb(self._connection, self._engine_name)
+        import duckdb
+
+        connection = cast(
+            duckdb.DuckDBPyConnection, self._connection or duckdb
+        )
+        with self._install_connection(connection):
+            return get_databases_from_duckdb(connection, self._engine_name)
 
     def get_tables_in_schema(
         self, *, schema: str, database: str, include_table_details: bool

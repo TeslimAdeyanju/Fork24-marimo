@@ -1,4 +1,6 @@
 /* Copyright 2024 Marimo. All rights reserved. */
+
+import { Suspense } from "react";
 import { z } from "zod";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { createPlugin } from "@/plugins/core/builder";
@@ -41,6 +43,7 @@ export const ChatPlugin = createPlugin<{ messages: ChatMessage[] }>(
           z.object({
             role: z.enum(["system", "user", "assistant"]),
             content: z.string(),
+            parts: z.array(z.any()).nullable(),
           }),
         ),
       }),
@@ -56,15 +59,7 @@ export const ChatPlugin = createPlugin<{ messages: ChatMessage[] }>(
             z.object({
               role: z.enum(["system", "user", "assistant"]),
               content: z.string(),
-              attachments: z
-                .array(
-                  z.object({
-                    name: z.string().optional(),
-                    contentType: z.string().optional(),
-                    url: z.string(),
-                  }),
-                )
-                .optional(),
+              parts: z.array(z.any()),
             }),
           ),
           config: z.object({
@@ -81,18 +76,20 @@ export const ChatPlugin = createPlugin<{ messages: ChatMessage[] }>(
   })
   .renderer((props) => (
     <TooltipProvider>
-      <Chatbot
-        prompts={props.data.prompts}
-        showConfigurationControls={props.data.showConfigurationControls}
-        maxHeight={props.data.maxHeight}
-        allowAttachments={props.data.allowAttachments}
-        config={props.data.config}
-        get_chat_history={props.functions.get_chat_history}
-        delete_chat_history={props.functions.delete_chat_history}
-        delete_chat_message={props.functions.delete_chat_message}
-        send_prompt={props.functions.send_prompt}
-        value={props.value?.messages || Arrays.EMPTY}
-        setValue={(messages) => props.setValue({ messages })}
-      />
+      <Suspense>
+        <Chatbot
+          prompts={props.data.prompts}
+          showConfigurationControls={props.data.showConfigurationControls}
+          maxHeight={props.data.maxHeight}
+          allowAttachments={props.data.allowAttachments}
+          config={props.data.config}
+          get_chat_history={props.functions.get_chat_history}
+          delete_chat_history={props.functions.delete_chat_history}
+          delete_chat_message={props.functions.delete_chat_message}
+          send_prompt={props.functions.send_prompt}
+          value={props.value?.messages || Arrays.EMPTY}
+          setValue={(messages) => props.setValue({ messages })}
+        />
+      </Suspense>
     </TooltipProvider>
   ));

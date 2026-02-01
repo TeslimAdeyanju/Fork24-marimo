@@ -16,9 +16,11 @@ interface JSON {
     text: string,
     reviver?: (this: any, key: string, value: any) => any,
   ): unknown;
+
+  rawJSON(value: string): unknown;
 }
 
 // Improve type inference for Array.filter with BooleanConstructor
 interface Array<T> {
-  filter(predicate: BooleanConstructor): Array<NonNullable<T>>;
+  filter(predicate: BooleanConstructor): NonNullable<T>[];
 }

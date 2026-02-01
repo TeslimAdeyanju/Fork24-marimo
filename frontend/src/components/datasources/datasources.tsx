@@ -3,16 +3,7 @@
 import { CommandList } from "cmdk";
 import { atom, useAtomValue, useSetAtom } from "jotai";
 import { sortBy } from "lodash-es";
-import {
-  DatabaseIcon,
-  EyeIcon,
-  PaintRollerIcon,
-  PlusIcon,
-  PlusSquareIcon,
-  RefreshCwIcon,
-  Table2Icon,
-  XIcon,
-} from "lucide-react";
+import { PlusIcon, PlusSquareIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import React from "react";
 import { dbDisplayName } from "@/components/databases/display";
 import { EngineVariable } from "@/components/databases/engine-variable";
@@ -30,7 +21,11 @@ import {
   type SQLTableContext,
   useDataSourceActions,
 } from "@/core/datasets/data-source-connections";
-import { DUCKDB_ENGINE, INTERNAL_SQL_ENGINES } from "@/core/datasets/engines";
+import {
+  DEFAULT_DUCKDB_DATABASE,
+  DUCKDB_ENGINE,
+  INTERNAL_SQL_ENGINES,
+} from "@/core/datasets/engines";
 import {
   PreviewSQLTable,
   PreviewSQLTableList,
@@ -48,13 +43,19 @@ import type {
   DataTable,
   DataTableColumn,
 } from "@/core/kernel/messages";
-import { previewDataSourceConnection } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { variablesAtom } from "@/core/variables/state";
 import type { VariableName } from "@/core/variables/types";
 import { useAsyncData } from "@/hooks/useAsyncData";
 import { logNever } from "@/utils/assertNever";
 import { cn } from "@/utils/cn";
 import { Events } from "@/utils/events";
+import {
+  DatabaseIcon,
+  SchemaIcon,
+  TableIcon,
+  ViewIcon,
+} from "../databases/namespace-icons";
 import { ErrorBoundary } from "../editor/boundary/ErrorBoundary";
 import { PythonIcon } from "../editor/cell/code/icons";
 import { useAddCodeToNewCell } from "../editor/cell/useAddCell";
@@ -101,9 +102,22 @@ const connectionsAtom = atom((get) => {
   const dataConnections = new Map(get(dataConnectionsMapAtom));
 
   // Filter out the internal engines if it has no databases
+  // Or if it has only the in-memory database and no schemas
   for (const engine of INTERNAL_SQL_ENGINES) {
     const connection = dataConnections.get(engine);
-    if (connection && connection.databases.length === 0) {
+    if (!connection) {
+      continue;
+    }
+
+    if (connection.databases.length === 0) {
+      dataConnections.delete(engine);
+    }
+
+    if (
+      connection.databases.length === 1 &&
+      connection.databases[0].name === DEFAULT_DUCKDB_DATABASE &&
+      connection.databases[0].schemas.length === 0
+    ) {
       dataConnections.delete(engine);
     }
   }
@@ -143,7 +157,7 @@ export const DataSources: React.FC = () => {
 
   return (
     <Command
-      className="border-b bg-background rounded-none h-full pb-10 overflow-auto outline-none"
+      className="border-b bg-background rounded-none h-full pb-10 overflow-auto outline-hidden"
       shouldFilter={false}
     >
       <div className="flex items-center w-full">
@@ -200,6 +214,7 @@ export const DataSources: React.FC = () => {
                   databaseName={database.name}
                   hasSearch={hasSearch}
                   searchValue={searchValue}
+                  dialect={connection.dialect}
                 />
               </DatabaseItem>
             ))}
@@ -228,6 +243,7 @@ const Engine: React.FC<{
   // The internal duckdb connection is updated automatically, so we do not need to refresh.
   const internalEngine = connection.name === DUCKDB_ENGINE;
   const engineName = internalEngine ? "In-Memory" : connection.name;
+  const { previewDataSourceConnection } = useRequestClient();
 
   const [isSpinning, setIsSpinning] = React.useState(false);
 
@@ -286,10 +302,12 @@ const DatabaseItem: React.FC<{
 }> = ({ hasSearch, engineName, database, children }) => {
   const [isExpanded, setIsExpanded] = React.useState(false);
   const [isSelected, setIsSelected] = React.useState(false);
+  const [prevHasSearch, setPrevHasSearch] = React.useState(hasSearch);
 
-  React.useEffect(() => {
+  if (prevHasSearch !== hasSearch) {
+    setPrevHasSearch(hasSearch);
     setIsExpanded(hasSearch);
-  }, [hasSearch]);
+  }
 
   return (
     <>
@@ -323,6 +341,7 @@ const SchemaList: React.FC<{
   schemas: DatabaseSchema[];
   defaultSchema?: string | null;
   defaultDatabase?: string | null;
+  dialect: string;
   engineName: string;
   databaseName: string;
   hasSearch: boolean;
@@ -331,6 +350,7 @@ const SchemaList: React.FC<{
   schemas,
   defaultSchema,
   defaultDatabase,
+  dialect,
   engineName,
   databaseName,
   hasSearch,
@@ -367,6 +387,7 @@ const SchemaList: React.FC<{
               schema: schema.name,
               defaultSchema: defaultSchema,
               defaultDatabase: defaultDatabase,
+              dialect: dialect,
             }}
           />
         </SchemaItem>
@@ -381,13 +402,9 @@ const SchemaItem: React.FC<{
   children: React.ReactNode;
   hasSearch: boolean;
 }> = ({ databaseName, schema, children, hasSearch }) => {
-  const [isExpanded, setIsExpanded] = React.useState(false);
+  const [isExpanded, setIsExpanded] = React.useState(hasSearch);
   const [isSelected, setIsSelected] = React.useState(false);
   const uniqueValue = `${databaseName}:${schema.name}`;
-
-  React.useEffect(() => {
-    setIsExpanded(hasSearch);
-  }, [hasSearch]);
 
   if (isSchemaless(schema.name)) {
     return children;
@@ -404,7 +421,7 @@ const SchemaItem: React.FC<{
         value={uniqueValue}
       >
         <RotatingChevron isExpanded={isExpanded} />
-        <PaintRollerIcon
+        <SchemaIcon
           className={cn(
             "h-4 w-4 text-muted-foreground",
             isSelected && isExpanded && "text-foreground",
@@ -618,7 +635,7 @@ const DatasetTableItem: React.FC<{
       return;
     }
 
-    const TableTypeIcon = table.type === "table" ? Table2Icon : EyeIcon;
+    const TableTypeIcon = table.type === "table" ? TableIcon : ViewIcon;
     return (
       <TableTypeIcon
         className="h-3 w-3"
@@ -675,11 +692,9 @@ const DatasetColumnItem: React.FC<{
   const closeAllColumns = useAtomValue(closeAllColumnsAtom);
   const setExpandedColumns = useSetAtom(expandedColumnsAtom);
 
-  React.useEffect(() => {
-    if (closeAllColumns) {
-      setIsExpanded(false);
-    }
-  }, [closeAllColumns]);
+  if (closeAllColumns && isExpanded) {
+    setIsExpanded(false);
+  }
 
   if (isExpanded) {
     setExpandedColumns(
@@ -760,7 +775,7 @@ const DatasetColumnItem: React.FC<{
         </span>
       </CommandItem>
       {isExpanded && (
-        <div className="pl-10 pr-2 py-2 bg-[var(--slate-1)] shadow-inner border-b">
+        <div className="pl-10 pr-2 py-2 bg-(--slate-1) shadow-inner border-b">
           <ErrorBoundary>
             <DatasetColumnPreview
               table={table}

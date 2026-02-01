@@ -182,14 +182,14 @@ def categorize_entries(
 
         if "breaking" in label_names:
             categories["breaking"].append(entry)
+        elif "preview" in label_names:
+            categories["preview"].append(entry)
         elif "bug" in label_names:
             categories["bug"].append(entry)
         elif "enhancement" in label_names:
             categories["enhancement"].append(entry)
         elif "documentation" in label_names:
             categories["documentation"].append(entry)
-        elif "preview" in label_names:
-            categories["preview"].append(entry)
         else:
             categories["other"].append(entry)
 
@@ -214,6 +214,15 @@ def format_entry(entry: CategorizedEntry) -> str:
     title = entry.commit.message
     title = strip_conventional_prefix(entry.commit.message)
     return f"* {title} ({entry.commit.sha[:7]})"
+
+
+def get_contributors(entries: list[CategorizedEntry]) -> list[str]:
+    """Extract unique contributors from all entries."""
+    contributors = set()
+    for entry in entries:
+        if entry.pr and entry.pr.author:
+            contributors.add(entry.pr.author.login)
+    return sorted(contributors, key=str.lower)
 
 
 def generate_release_notes(since_tag: str) -> str:
@@ -286,8 +295,15 @@ def generate_release_notes(since_tag: str) -> str:
             notes.append(format_entry(entry))
         notes.append("")
 
-    notes.append("## New Contributors")
+    contributors = get_contributors(entries)
+    notes.append("## Contributors")
+    notes.append(
+        f"Thanks to all our community and contributors who made this release possible: @{', @'.join(contributors)}"
+    )
+    notes.append("")
+    notes.append("And especially to our new contributors:")
     notes.append("* TODO: Check for new contributors")
+    notes.append("")
 
     current_tag = "TODO_CURRENT_VERSION"
     notes.append(

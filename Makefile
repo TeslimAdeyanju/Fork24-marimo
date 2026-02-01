@@ -58,7 +58,13 @@ dev:
 	@echo "Starting development servers..."
 	@# Start both processes, with marimo in background
 	@(trap 'kill %1; exit' INT; \
-	marimo edit --no-token --headless /tmp & \
+	uv run marimo edit --no-token --headless /tmp --port 2718 & \
+	pnpm dev)
+dev-sandbox:
+	@echo "Starting development servers..."
+	@# Start both processes, with marimo in background
+	@(trap 'kill %1; exit' INT; \
+	uv run marimo edit /tmp/notebook.py --no-token --headless --sandbox & \
 	pnpm dev)
 
 #############
@@ -100,8 +106,8 @@ fe-typecheck:
 .PHONY: fe-codegen
 # 🔄 Generate frontend API
 fe-codegen:
-	uv run ./marimo development openapi > packages/openapi/api.yaml
-	pnpm run --filter @marimo-team/marimo-api codegen
+	uv run --python=3.12 ./marimo development openapi > packages/openapi/api.yaml
+	pnpm run codegen
 	pnpm format packages/openapi/
 
 .PHONY: py-check

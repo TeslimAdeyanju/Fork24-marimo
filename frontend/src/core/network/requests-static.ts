@@ -57,9 +57,11 @@ export function createStaticRequests(): EditRequests & RunRequests {
     previewSQLTable: throwNotInEditMode,
     previewSQLTableList: throwNotInEditMode,
     previewDataSourceConnection: throwNotInEditMode,
+    validateSQL: throwNotInEditMode,
     openFile: throwNotInEditMode,
     getUsageStats: throwNotInEditMode,
     sendListFiles: throwNotInEditMode,
+    sendSearchFiles: throwNotInEditMode,
     sendPdb: throwNotInEditMode,
     sendCreateFileOrFolder: throwNotInEditMode,
     sendDeleteFileOrFolder: throwNotInEditMode,
@@ -84,5 +86,7 @@ export function createStaticRequests(): EditRequests & RunRequests {
     listSecretKeys: throwNotInEditMode,
     writeSecret: throwNotInEditMode,
     invokeAiTool: throwNotInEditMode,
+    clearCache: throwNotInEditMode,
+    getCacheInfo: throwNotInEditMode,
   };
 }

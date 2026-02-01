@@ -39,6 +39,7 @@ import {
   ChdbConnectionSchema,
   ClickhouseConnectionSchema,
   type DatabaseConnection,
+  DatabricksConnectionSchema,
   DataFusionConnectionSchema,
   DuckDBConnectionSchema,
   IcebergConnectionSchema,
@@ -49,6 +50,7 @@ import {
   RedshiftConnectionSchema,
   SnowflakeConnectionSchema,
   SQLiteConnectionSchema,
+  SupabaseConnectionSchema,
   TimeplusConnectionSchema,
   TrinoConnectionSchema,
 } from "./schemas";
@@ -59,7 +61,7 @@ interface Props {
 
 interface ConnectionSchema {
   name: string;
-  schema: z.ZodType;
+  schema: z.ZodType<DatabaseConnection>;
   color: string;
   logo: DBLogoName;
   connectionLibraries: {
@@ -210,6 +212,26 @@ const DATABASES = [
       preferred: "redshift",
     },
   },
+  {
+    name: "Databricks",
+    schema: DatabricksConnectionSchema,
+    color: "#c41e0c",
+    logo: "databricks",
+    connectionLibraries: {
+      libraries: ["sqlalchemy", "sqlmodel", "ibis"],
+      preferred: "sqlalchemy",
+    },
+  },
+  {
+    name: "Supabase",
+    schema: SupabaseConnectionSchema,
+    color: "#238F5F",
+    logo: "supabase",
+    connectionLibraries: {
+      libraries: ["sqlalchemy", "sqlmodel"],
+      preferred: "sqlalchemy",
+    },
+  },
 ] satisfies ConnectionSchema[];
 
 const DATA_CATALOGS = [
@@ -226,14 +248,14 @@ const DATA_CATALOGS = [
 ] satisfies ConnectionSchema[];
 
 const DatabaseSchemaSelector: React.FC<{
-  onSelect: (schema: z.ZodType) => void;
+  onSelect: (schema: z.ZodType<DatabaseConnection>) => void;
 }> = ({ onSelect }) => {
   const renderItem = ({ name, schema, color, logo }: ConnectionSchema) => {
     return (
       <button
         type="button"
         key={name}
-        className="py-3 flex flex-col items-center justify-center gap-1 transition-all hover:scale-105 hover:brightness-110 rounded shadow-smSolid hover:shadow-mdSolid"
+        className="py-3 flex flex-col items-center justify-center gap-1 transition-all hover:scale-105 hover:brightness-110 rounded shadow-sm-solid hover:shadow-md-solid"
         style={{ backgroundColor: color }}
         onClick={() => onSelect(schema)}
       >
@@ -265,13 +287,15 @@ const DatabaseSchemaSelector: React.FC<{
 const RENDERERS: FormRenderer[] = [ENV_RENDERER];
 
 const DatabaseForm: React.FC<{
-  schema: z.ZodType;
+  schema: z.ZodType<DatabaseConnection>;
   onSubmit: () => void;
   onBack: () => void;
 }> = ({ schema, onSubmit, onBack }) => {
   const form = useForm<DatabaseConnection>({
     defaultValues: getDefaults(schema),
-    resolver: zodResolver(schema),
+    resolver: zodResolver(
+      schema as unknown as z.ZodType<unknown, DatabaseConnection>,
+    ),
     reValidateMode: "onChange",
   });
 
@@ -346,7 +370,8 @@ const DatabaseForm: React.FC<{
 };
 
 const AddDatabaseForm: React.FC<Props> = ({ onSubmit }) => {
-  const [selectedSchema, setSelectedSchema] = useState<z.ZodType | null>(null);
+  const [selectedSchema, setSelectedSchema] =
+    useState<z.ZodType<DatabaseConnection> | null>(null);
 
   if (!selectedSchema) {
     return <DatabaseSchemaSelector onSelect={setSelectedSchema} />;

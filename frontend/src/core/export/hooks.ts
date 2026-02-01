@@ -3,11 +3,7 @@ import { useAtomValue } from "jotai";
 import { appConfigAtom } from "@/core/config/config";
 import { useInterval } from "@/hooks/useInterval";
 import { connectionAtom } from "../network/connection";
-import {
-  autoExportAsHTML,
-  autoExportAsIPYNB,
-  autoExportAsMarkdown,
-} from "../network/requests";
+import { useRequestClient } from "../network/requests";
 import { VirtualFileTracker } from "../static/virtual-file-tracker";
 import { WebSocketState } from "../websocket/types";
 
@@ -21,9 +17,12 @@ export function useAutoExport() {
   const htmlEnabled = appConfig.auto_download.includes("html");
   const ipynbEnabled = appConfig.auto_download.includes("ipynb");
 
-  const markdownDisabled = !markdownEnabled || state !== WebSocketState.OPEN;
-  const htmlDisabled = !htmlEnabled || state !== WebSocketState.OPEN;
-  const ipynbDisabled = !ipynbEnabled || state !== WebSocketState.OPEN;
+  const isConnected = state === WebSocketState.OPEN;
+  const markdownDisabled = !markdownEnabled || !isConnected;
+  const htmlDisabled = !htmlEnabled || !isConnected;
+  const ipynbDisabled = !ipynbEnabled || !isConnected;
+  const { autoExportAsHTML, autoExportAsIPYNB, autoExportAsMarkdown } =
+    useRequestClient();
 
   useInterval(
     async () => {

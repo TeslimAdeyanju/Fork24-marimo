@@ -5,14 +5,27 @@ import parse, {
   Element,
   type HTMLReactParserOptions,
 } from "html-react-parser";
-import React, { type JSX, type ReactNode, useId } from "react";
+import React, {
+  isValidElement,
+  type JSX,
+  type ReactNode,
+  useMemo,
+  useRef,
+} from "react";
 import { CopyClipboardIcon } from "@/components/icons/copy-icon";
+import { QueryParamPreservingLink } from "@/components/ui/query-param-preserving-link";
+import { sanitizeHtml, useSanitizeHtml } from "./sanitize";
 
 type ReplacementFn = NonNullable<HTMLReactParserOptions["replace"]>;
 type TransformFn = NonNullable<HTMLReactParserOptions["transform"]>;
 
 interface Options {
   html: string;
+  /**
+   * Whether to sanitize the HTML.
+   * @default true
+   */
+  alwaysSanitizeHtml?: boolean;
   additionalReplacements?: ReplacementFn[];
 }
 
@@ -20,6 +33,36 @@ const replaceValidTags = (domNode: DOMNode) => {
   // Don't render invalid tags
   if (domNode instanceof Element && !/^[A-Za-z][\w-]*$/.test(domNode.name)) {
     return React.createElement(React.Fragment);
+  }
+};
+
+const removeWrappingBodyTags: TransformFn = (
+  reactNode: ReactNode,
+  domNode: DOMNode,
+) => {
+  // Remove body tags and just render their children
+  if (domNode instanceof Element && domNode.name === "body") {
+    if (isValidElement(reactNode) && "props" in reactNode) {
+      const props = reactNode.props as { children?: ReactNode };
+      const children = props.children;
+      return <>{children}</>; // eslint-disable-line react/jsx-no-useless-fragment
+    }
+    return;
+  }
+};
+
+const removeWrappingHtmlTags: TransformFn = (
+  reactNode: ReactNode,
+  domNode: DOMNode,
+) => {
+  // Remove html tags and just render their children
+  if (domNode instanceof Element && domNode.name === "html") {
+    if (isValidElement(reactNode) && "props" in reactNode) {
+      const props = reactNode.props as { children?: ReactNode };
+      const children = props.children;
+      return <>{children}</>; // eslint-disable-line react/jsx-no-useless-fragment
+    }
+    return;
   }
 };
 
@@ -59,8 +102,32 @@ const replaceSrcScripts = (domNode: DOMNode): JSX.Element | undefined => {
       script.src = src;
       document.head.append(script);
     }
-    // eslint-disable-next-line react/jsx-no-useless-fragment
+    // biome-ignore lint/complexity/noUselessFragments: this is intentional
     return <></>;
+  }
+};
+
+const preserveQueryParamsInAnchorLinks: TransformFn = (
+  reactNode: ReactNode,
+  domNode: DOMNode,
+): JSX.Element | undefined => {
+  if (domNode instanceof Element && domNode.name === "a") {
+    const href = domNode.attribs.href;
+    // Only handle anchor links (starting with #)
+    if (href?.startsWith("#") && !href.startsWith("#code/")) {
+      // Get the children from the parsed React node
+      let children: ReactNode = null;
+      if (isValidElement(reactNode) && "props" in reactNode) {
+        const props = reactNode.props as { children?: ReactNode };
+        children = props.children;
+      }
+
+      return (
+        <QueryParamPreservingLink href={href} {...domNode.attribs}>
+          {children}
+        </QueryParamPreservingLink>
+      );
+    }
   }
 };
 
@@ -80,9 +147,9 @@ const addCopyButtonToCodehilite: TransformFn = (
 };
 
 const CopyableCode = ({ children }: { children: ReactNode }) => {
-  const id = useId();
+  const ref = useRef<HTMLDivElement>(null);
   return (
-    <div className="relative group codehilite-wrapper" id={id}>
+    <div className="relative group codehilite-wrapper" ref={ref}>
       {children}
 
       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -90,7 +157,7 @@ const CopyableCode = ({ children }: { children: ReactNode }) => {
           tooltip={false}
           className="p-1"
           value={() => {
-            const codeElement = document.getElementById(id)?.firstChild;
+            const codeElement = ref.current?.firstChild;
             if (codeElement) {
               return codeElement.textContent || "";
             }
@@ -102,7 +169,51 @@ const CopyableCode = ({ children }: { children: ReactNode }) => {
   );
 };
 
-export const renderHTML = ({ html, additionalReplacements = [] }: Options) => {
+/**
+ *
+ * @param html - The HTML to render.
+ * @param additionalReplacements - Additional replacements to apply to the HTML.
+ * @param alwaysSanitizeHtml - Whether to sanitize the HTML.
+ * @returns
+ */
+export const renderHTML = ({
+  html,
+  additionalReplacements = [],
+  alwaysSanitizeHtml = true,
+}: Options) => {
+  return (
+    <RenderHTML
+      html={html}
+      alwaysSanitizeHtml={alwaysSanitizeHtml}
+      additionalReplacements={additionalReplacements}
+    />
+  );
+};
+
+const RenderHTML = ({
+  html,
+  additionalReplacements = [],
+  alwaysSanitizeHtml,
+}: Options) => {
+  const shouldSanitizeHtml = useSanitizeHtml();
+
+  const sanitizedHtml = useMemo(() => {
+    if (alwaysSanitizeHtml || shouldSanitizeHtml) {
+      return sanitizeHtml(html);
+    }
+    return html;
+  }, [html, alwaysSanitizeHtml, shouldSanitizeHtml]);
+
+  return parseHtml({
+    html: sanitizedHtml,
+    additionalReplacements,
+  });
+};
+
+function parseHtml({
+  html,
+  additionalReplacements = [],
+}: Pick<Options, "html" | "additionalReplacements">) {
   const renderFunctions: ReplacementFn[] = [
     replaceValidTags,
     replaceValidIframes,
@@ -110,7 +221,12 @@ export const renderHTML = ({ html, additionalReplacements = [] }: Options) => {
     ...additionalReplacements,
   ];
 
-  const transformFunctions: TransformFn[] = [addCopyButtonToCodehilite];
+  const transformFunctions: TransformFn[] = [
+    addCopyButtonToCodehilite,
+    preserveQueryParamsInAnchorLinks,
+    removeWrappingBodyTags,
+    removeWrappingHtmlTags,
+  ];
 
   return parse(html, {
     replace: (domNode: DOMNode, index: number) => {
@@ -129,8 +245,11 @@ export const renderHTML = ({ html, additionalReplacements = [] }: Options) => {
           return transformed;
         }
       }
-      // eslint-disable-next-line react/jsx-no-useless-fragment
       return reactNode as JSX.Element;
     },
   });
+}
+
+export const visibleForTesting = {
+  parseHtml,
 };

@@ -10,19 +10,17 @@
 
 import marimo
 
-__generated_with = "0.10.12"
+__generated_with = "0.17.4"
 app = marimo.App(width="full")
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        """
-        # Using `Polars` in `marimo`
+    mo.md("""
+    # Using `Polars` in `marimo`
 
-        > Lightning-fast DataFrame library for Rust and Python
-        """
-    )
+    > Lightning-fast DataFrame library for Rust and Python
+    """)
     return
 
 
@@ -32,7 +30,7 @@ def _():
     import polars as pl
     import numpy as np
     import altair as alt
-    return alt, mo, np, pl
+    return alt, mo, pl
 
 
 @app.cell
@@ -60,7 +58,7 @@ def _(df, mo):
 
 
     mo.hstack([type_1_filter, type_2_filter], justify="start")
-    return type_1_filter, type_2_filter, values_1, values_2
+    return type_1_filter, type_2_filter
 
 
 @app.cell
@@ -75,7 +73,9 @@ def _(df, pl, type_1_filter, type_2_filter):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""Select points on the chart 👇""")
+    mo.md(r"""
+    Select points on the chart 👇
+    """)
     return
 
 

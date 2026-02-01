@@ -28,7 +28,7 @@ import { autoInstantiateAtom, isAiEnabled } from "@/core/config/config";
 import type { UserConfig } from "@/core/config/config-schema";
 import { OverridingHotkeyProvider } from "@/core/hotkeys/hotkeys";
 import { connectionAtom } from "@/core/network/connection";
-import { saveCellConfig } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { isRtcEnabled } from "@/core/rtc/state";
 import { useSaveNotebook } from "@/core/saving/save-component";
 import { WebSocketState } from "@/core/websocket/types";
@@ -49,7 +49,7 @@ export interface CellEditorProps
   runCell: () => void;
   theme: Theme;
   showPlaceholder: boolean;
-  editorViewRef: React.MutableRefObject<EditorView | null>;
+  editorViewRef: React.RefObject<EditorView | null>;
   setEditorView: (view: EditorView) => void;
   userConfig: UserConfig;
   /**
@@ -65,8 +65,9 @@ export interface CellEditorProps
   >;
   // Props below are not used by scratchpad.
   // DOM node where the editorView will be mounted
-  editorViewParentRef?: React.MutableRefObject<HTMLDivElement | null>;
+  editorViewParentRef?: React.RefObject<HTMLDivElement | null>;
   showHiddenCode: (opts?: { focus?: boolean }) => void;
+  outputArea?: "above" | "below";
 }
 
 const CellEditorInternal = ({
@@ -88,11 +89,13 @@ const CellEditorInternal = ({
   languageAdapter,
   setLanguageAdapter,
   showLanguageToggles = true,
+  outputArea,
 }: CellEditorProps) => {
   const [aiCompletionCell, setAiCompletionCell] = useAtom(aiCompletionCellAtom);
   const deleteCell = useDeleteCellCallback();
   const { saveOrNameNotebook } = useSaveNotebook();
   const pendingDeleteService = usePendingDeleteService();
+  const { saveCellConfig } = useRequestClient();
 
   const loading = status === "running" || status === "queued";
   const cellActions = useCellActions();
@@ -186,6 +189,7 @@ const CellEditorInternal = ({
       hotkeys: new OverridingHotkeyProvider(userConfig.keymap.overrides ?? {}),
       diagnosticsConfig: userConfig.diagnostics,
       displayConfig: userConfig.display,
+      inlineAiTooltip: userConfig.ai?.inline_tooltip ?? false,
     });
 
     extensions.push(
@@ -216,6 +220,12 @@ const CellEditorInternal = ({
             showHiddenCode({ focus: false });
           }
         }
+      }),
+      // Whenever the editor is focused (e.g. via go-to-definition), show the cell if it is hidden.
+      EditorView.domEventHandlers({
+        focus: () => {
+          showHiddenCode({ focus: false });
+        },
       }),
     );
 
@@ -380,7 +390,7 @@ const CellEditorInternal = ({
     };
   }, [editorViewRef]);
 
-  const navigationProps = useCellEditorNavigationProps(cellId);
+  const navigationProps = useCellEditorNavigationProps(cellId, editorViewRef);
 
   // Completely hide the editor & icons if it's markdown and hidden. If there is output, we show.
   const showHideButton =
@@ -390,14 +400,15 @@ const CellEditorInternal = ({
   if (isMarkdown && hidden && hasOutput) {
     editorClassName = "h-0 overflow-hidden";
   } else if (hidden) {
+    // Shortens the editor and hides the cell panels
     editorClassName =
-      "opacity-20 h-8 [&>div.cm-editor]:h-full [&>div.cm-editor]:overflow-hidden";
+      "opacity-20 h-8 [&>div.cm-editor]:h-full [&>div.cm-editor]:overflow-hidden [&_.cm-panels]:hidden";
   }
 
   return (
     <AiCompletionEditor
-      enabled={aiCompletionCell?.cellId === cellId}
-      initialPrompt={aiCompletionCell?.initialPrompt}
+      cellId={cellId}
+      aiCompletionCell={aiCompletionCell}
       currentCode={editorViewRef.current?.state.doc.toString() ?? code}
       currentLanguageAdapter={languageAdapter}
       declineChange={useEvent(() => {
@@ -424,6 +435,8 @@ const CellEditorInternal = ({
         editorViewRef.current?.focus();
         setAiCompletionCell(null);
       })}
+      runCell={handleRunCell}
+      outputArea={outputArea}
     >
       <div className="relative w-full" {...navigationProps}>
         {showHideButton && (
@@ -501,7 +514,6 @@ CellCodeMirrorEditor.displayName = "CellCodeMirrorEditor";
 function WithWaitUntilConnected<T extends {}>(
   Component: React.ComponentType<T>,
 ) {
-  // biome-ignore lint/nursery/noNestedComponentDefinitions: this is evaluated top-level
   const WaitUntilConnectedComponent = (props: T) => {
     const connection = useAtomValue(connectionAtom);
     const [rtcDoc, setRtcDoc] = useAtom(connectedDocAtom);

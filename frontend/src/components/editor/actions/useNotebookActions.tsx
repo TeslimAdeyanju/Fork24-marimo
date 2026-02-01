@@ -60,11 +60,7 @@ import { Constants } from "@/core/constants";
 import { useLayoutActions, useLayoutState } from "@/core/layout/layout";
 import { useTogglePresenting } from "@/core/layout/useTogglePresenting";
 import { kioskModeAtom, viewStateAtom } from "@/core/mode";
-import {
-  exportAsMarkdown,
-  readCode,
-  saveCellConfig,
-} from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { useFilename } from "@/core/saving/filename";
 import { downloadAsHTML } from "@/core/static/download-html";
 import { createShareableLink } from "@/core/wasm/share";
@@ -77,8 +73,8 @@ import { newNotebookURL } from "@/utils/urls";
 import { useRunAllCells } from "../cell/useRunCells";
 import { useChromeActions, useChromeState } from "../chrome/state";
 import { PANELS } from "../chrome/types";
-import { commandPaletteAtom } from "../controls/command-palette";
 import { keyboardShortcutsAtom } from "../controls/keyboard-shortcuts";
+import { commandPaletteAtom } from "../controls/state";
 import { AddDatabaseDialogContent } from "../database/add-database-form";
 import { displayLayoutName, getLayoutIcon } from "../renderers/layout-select";
 import { LAYOUT_TYPES } from "../renderers/types";
@@ -106,7 +102,7 @@ export function useNotebookActions() {
     updateCellConfig,
     undoDeleteCell,
     clearAllCellOutputs,
-    upsertSetupCell,
+    addSetupCellIfDoesntExist,
     collapseAllCells,
     expandAllCells,
   } = useCellActions();
@@ -116,6 +112,7 @@ export function useNotebookActions() {
   const setCommandPaletteOpen = useSetAtom(commandPaletteAtom);
   const setSettingsDialogOpen = useSetAtom(settingDialogAtom);
   const setKeyboardShortcutsOpen = useSetAtom(keyboardShortcutsAtom);
+  const { exportAsMarkdown, readCode, saveCellConfig } = useRequestClient();
 
   const hasDisabledCells = useAtomValue(hasDisabledCellsAtom);
   const hasEnabledCells = useAtomValue(hasEnabledCellsAtom);
@@ -404,9 +401,7 @@ export function useNotebookActions() {
       icon: <DiamondPlusIcon size={14} strokeWidth={1.5} />,
       label: "Add setup cell",
       handle: () => {
-        upsertSetupCell({
-          code: "# Initialization code that runs before all other cells",
-        });
+        addSetupCellIfDoesntExist({});
       },
     },
     {

@@ -2,18 +2,19 @@
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { merge } from "lodash-es";
 import { OverridingHotkeyProvider } from "../hotkeys/hotkeys";
+import { type Platform, resolvePlatform } from "../hotkeys/shortcuts";
 import { store } from "../state/jotai";
 import {
   type AppConfig,
+  defaultUserConfig,
   parseAppConfig,
-  parseUserConfig,
   type UserConfig,
 } from "./config-schema";
 
 /**
  * Atom for storing the user config.
  */
-export const userConfigAtom = atom<UserConfig>(parseUserConfig({}));
+export const userConfigAtom = atom<UserConfig>(defaultUserConfig());
 
 export const configOverridesAtom = atom<{}>({});
 
@@ -31,9 +32,12 @@ export const hotkeyOverridesAtom = atom((get) => {
   return get(resolvedMarimoConfigAtom).keymap.overrides ?? {};
 });
 
+export const platformAtom = atom<Platform>(resolvePlatform());
+
 export const hotkeysAtom = atom((get) => {
   const overrides = get(hotkeyOverridesAtom);
-  return new OverridingHotkeyProvider(overrides);
+  const platform = get(platformAtom);
+  return new OverridingHotkeyProvider(overrides, { platform });
 });
 
 export const autoSaveConfigAtom = atom((get) => {
@@ -42,6 +46,10 @@ export const autoSaveConfigAtom = atom((get) => {
 
 export const aiAtom = atom((get) => {
   return get(resolvedMarimoConfigAtom).ai;
+});
+
+export const completionAtom = atom((get) => {
+  return get(resolvedMarimoConfigAtom).completion;
 });
 
 export const keymapPresetAtom = atom((get) => {
@@ -74,12 +82,15 @@ export const editorFontSizeAtom = atom<number>((get) => {
   return get(resolvedMarimoConfigAtom).display.code_editor_font_size;
 });
 
+export const localeAtom = atom<string | null | undefined>((get) => {
+  return get(resolvedMarimoConfigAtom).display.locale;
+});
+
 export function isAiEnabled(config: UserConfig) {
   return (
-    Boolean(config.ai?.open_ai?.api_key) ||
-    Boolean(config.ai?.anthropic?.api_key) ||
-    Boolean(config.ai?.google?.api_key) ||
-    Boolean(config.ai?.bedrock?.profile_name)
+    Boolean(config.ai?.models?.chat_model) ||
+    Boolean(config.ai?.models?.edit_model) ||
+    Boolean(config.ai?.models?.autocomplete_model)
   );
 }
 

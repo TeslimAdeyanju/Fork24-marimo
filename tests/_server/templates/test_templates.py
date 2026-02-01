@@ -165,7 +165,7 @@ class TestNotebookPageTemplate(unittest.TestCase):
             self.mode,
         )
 
-        assert head in result
+        assert head in result.split("</head>", 1)[0]
         _assert_no_leftover_replacements(result)
 
     def test_notebook_page_template_with_custom_css_config(self) -> None:
@@ -270,6 +270,28 @@ class TestNotebookPageTemplate(unittest.TestCase):
         assert "<style title='marimo-custom'>" not in result
         _assert_no_leftover_replacements(result)
 
+    def test_notebook_page_template_with_asset_url(self) -> None:
+        """Test notebook page template with custom asset URL."""
+        asset_url = "https://cdn.example.com/v{version}"
+
+        result = templates.notebook_page_template(
+            self.html,
+            self.base_url,
+            self.user_config,
+            self.config_overrides,
+            self.server_token,
+            self.app_config,
+            str(self.filename),
+            self.mode,
+            asset_url=asset_url,
+        )
+
+        # Asset URLs should be replaced
+        assert 'href="https://cdn.example.com/' in result
+        assert 'src="https://cdn.example.com/' in result
+        assert 'crossorigin="anonymous"' in result
+        _assert_no_leftover_replacements(result)
+
 
 class TestHomePageTemplate(unittest.TestCase):
     def setUp(self) -> None:
@@ -304,6 +326,25 @@ class TestHomePageTemplate(unittest.TestCase):
         assert json.dumps({}) in result
         assert "" in result
         assert "home" in result
+        _assert_no_leftover_replacements(result)
+
+    def test_home_page_template_with_asset_url(self) -> None:
+        """Test home page template with custom asset URL."""
+        asset_url = "https://cdn.example.com/v{version}"
+
+        result = templates.home_page_template(
+            self.html,
+            self.base_url,
+            self.user_config,
+            self.config_overrides,
+            self.server_token,
+            asset_url=asset_url,
+        )
+
+        # Asset URLs should be replaced
+        assert 'href="https://cdn.example.com/' in result
+        assert 'src="https://cdn.example.com/' in result
+        assert 'crossorigin="anonymous"' in result
         _assert_no_leftover_replacements(result)
 
 
@@ -660,6 +701,123 @@ class TestStaticNotebookTemplate(unittest.TestCase):
         assert "<style title='marimo-custom'>" not in result
         _assert_no_leftover_replacements(result)
 
+    def test_static_files_injection_prevention(self) -> None:
+        """Test that malicious content in files dict doesn't enable script breakout."""
+        # Test with malicious file keys and values
+        malicious_files = {
+            "normal.txt": "safe content",
+            "</script><script>alert(1)</script>": "content",
+            "file.js": "</script><img src=x onerror=alert(1)>",
+            "test&<>.py": "content with <script>alert(1)</script>",
+        }
+
+        result = templates.static_notebook_template(
+            self.html,
+            self.user_config,
+            self.config_overrides,
+            self.server_token,
+            self.app_config,
+            self.filepath,
+            self.code,
+            hash_code(self.code),
+            self.session_snapshot,
+            self.notebook_snapshot,
+            malicious_files,
+        )
+
+        # Must not contain unescaped script breakout sequences (< and > escaped)
+        assert "</script><script>alert(1)" not in result
+        assert "<img" not in result  # The < should be escaped
+
+        # Must contain escaped versions of < and >
+        assert "\\u003C" in result or "\\u003E" in result
+
+        # Must still be valid HTML
+        _assert_no_leftover_replacements(result)
+
+    def test_static_malicious_filename_injection(self) -> None:
+        """Test that malicious filenames in static exports are properly escaped."""
+        malicious_filepath = (
+            self.tmp_path / "</script><script>alert(1)</script>.py"
+        )
+
+        result = templates.static_notebook_template(
+            self.html,
+            self.user_config,
+            self.config_overrides,
+            self.server_token,
+            self.app_config,
+            str(malicious_filepath),
+            self.code,
+            hash_code(self.code),
+            self.session_snapshot,
+            self.notebook_snapshot,
+            self.files,
+        )
+
+        # Must not contain unescaped script tags
+        assert "</script><script>" not in result
+        assert "<script>alert(1)" not in result.replace(
+            "\\u003Cscript\\u003E", ""
+        )
+
+        # Must contain escaped versions in JSON context
+        assert "\\u003C" in result or "\\u003E" in result
+
+        _assert_no_leftover_replacements(result)
+
+    def test_static_malicious_code_content(self) -> None:
+        """Test that malicious code content is properly escaped in static export."""
+        malicious_code = """
+import marimo as mo
+# This code contains </script><script>alert('XSS')</script>
+mo.md("<img src=x onerror=alert(1)>")
+"""
+
+        # Create session with malicious code in output
+        malicious_session = NotebookSessionV1(
+            version=VERSION,
+            metadata=NotebookSessionMetadata(marimo_version="0.1.0"),
+            cells=[
+                Cell(
+                    cell_id="cell1",
+                    code=malicious_code,
+                    outputs=[
+                        DataOutput(
+                            channel="output",
+                            mimetype="text/html",
+                            data="</script><script>alert(1)</script>",
+                            timestamp=0.0,
+                        )
+                    ],
+                    console=[],
+                )
+            ],
+        )
+
+        result = templates.static_notebook_template(
+            self.html,
+            self.user_config,
+            self.config_overrides,
+            self.server_token,
+            self.app_config,
+            self.filepath,
+            malicious_code,
+            hash_code(malicious_code),
+            malicious_session,
+            self.notebook_snapshot,
+            self.files,
+        )
+
+        # The malicious code itself should be in JSON context (escaped)
+        # Must not have unescaped dangerous sequences in script tags (< and > escaped)
+        assert "</script><script>alert('XSS')" not in result
+
+        # Must have escaped versions of < and >
+        assert "\\u003C" in result or "\\u003E" in result
+
+        _assert_no_leftover_replacements(result)
+
 
 class TestWasmNotebookTemplate(unittest.TestCase):
     def setUp(self) -> None:
@@ -768,3 +926,44 @@ class TestWasmNotebookTemplate(unittest.TestCase):
         assert "#filename-input" in result
         assert "<title>My App</title>" in result
         _assert_no_leftover_replacements(result)
+
+
+class TestReplaceAssetUrls(unittest.TestCase):
+    """Test the _replace_asset_urls function."""
+
+    def test_replace_asset_urls_basic(self) -> None:
+        """Test basic asset URL replacement."""
+        html = """<link href="./assets/style.css" rel="stylesheet">
+<script src="./assets/app.js"></script>"""
+
+        result = templates._replace_asset_urls(html, "https://cdn.example.com")
+
+        assert (
+            result
+            == """<link crossorigin="anonymous" href="https://cdn.example.com/assets/style.css" rel="stylesheet">
+<script crossorigin="anonymous" src="https://cdn.example.com/assets/app.js"></script>"""
+        )
+
+    def test_replace_asset_urls_with_version(self) -> None:
+        """Test asset URL replacement with version placeholder."""
+        from marimo._version import __version__
+
+        html = """<link href="./assets/style.css" rel="stylesheet">"""
+
+        result = templates._replace_asset_urls(
+            html, "https://cdn.example.com/v{version}"
+        )
+
+        expected = f"""<link crossorigin="anonymous" href="https://cdn.example.com/v{__version__}/assets/style.css" rel="stylesheet">"""
+        assert result == expected
+
+    def test_replace_asset_urls_double_quotes(self) -> None:
+        """Test asset URL replacement with double quotes."""
+        html = '<link href="./assets/style.css" rel="stylesheet">'
+
+        result = templates._replace_asset_urls(html, "https://cdn.example.com")
+
+        assert (
+            result
+            == '<link crossorigin="anonymous" href="https://cdn.example.com/assets/style.css" rel="stylesheet">'
+        )

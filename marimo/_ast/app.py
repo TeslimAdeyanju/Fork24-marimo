@@ -1,12 +1,17 @@
 # Copyright 2024 Marimo. All rights reserved.
 from __future__ import annotations
 
-import ast
 import base64
 import inspect
+import os
 import sys
 import threading
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import (
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,  # noqa: TC003
+)
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
@@ -16,40 +21,28 @@ from typing import (
     Callable,
     Literal,
     Optional,
+    ParamSpec,
+    TypeAlias,
     TypeVar,
     Union,
     cast,
     overload,
 )
-from uuid import uuid4
-
-from marimo._ast.app_config import _AppConfig
-from marimo._ast.variables import BUILTINS
-from marimo._convert.converters import MarimoConvert
-from marimo._schemas.serialization import (
-    AppInstantiation,
-    CellDef,
-    NotebookSerializationV1,
-)
-from marimo._types.ids import CellId_t
-
-if sys.version_info < (3, 10):
-    from typing_extensions import ParamSpec, TypeAlias
-else:
-    from typing import ParamSpec, TypeAlias
-
-from collections.abc import Sequence  # noqa: TC003
 
 from marimo import _loggers
+from marimo._ast.app_config import _AppConfig
 from marimo._ast.cell import Cell, CellConfig, CellImpl
+from marimo._ast.cell_id import external_prefix
 from marimo._ast.cell_manager import CellManager
 from marimo._ast.errors import (
     CycleError,
-    DeleteNonlocalError,
     MultipleDefinitionError,
     SetupRootError,
     UnparsableError,
 )
+from marimo._ast.parse import ast_parse
+from marimo._ast.variables import BUILTINS
+from marimo._convert.converters import MarimoConvert
 from marimo._messaging.mimetypes import KnownMimeType
 from marimo._output.hypertext import Html
 from marimo._output.rich_help import mddoc
@@ -65,6 +58,12 @@ from marimo._runtime.requests import (
     FunctionCallRequest,
     SetUIElementValueRequest,
 )
+from marimo._schemas.serialization import (
+    AppInstantiation,
+    CellDef,
+    NotebookSerializationV1,
+)
+from marimo._types.ids import CellId_t
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -77,7 +76,7 @@ if TYPE_CHECKING:
 P = ParamSpec("P")
 R = TypeVar("R")
 Fn: TypeAlias = Callable[P, R]
-Cls: TypeAlias = type
+Cls = TypeVar("Cls", bound=type)
 LOGGER = _loggers.marimo_logger()
 
 
@@ -109,9 +108,16 @@ class _SetupContext:
     See design discussion in MEP-0008 (github:marimo-team/meps/pull/8).
     """
 
-    def __init__(self, cell: Cell):
+    def __init__(
+        self,
+        cell: Cell,
+        app: App,
+        hide_code: bool,
+    ):
         super().__init__()
+        self._app = app
         self._cell = cell
+        self._hide_code = hide_code
         self._glbls: dict[str, Any] = {}
         self._frame: Optional[FrameType] = None
         self._previous: dict[str, Any] = {}
@@ -157,6 +163,23 @@ class _SetupContext:
                 if var in self._frame.f_locals:
                     self._glbls[var] = self._frame.f_locals.get(var)
         return False
+
+    def __call__(
+        self,
+        *,
+        hide_code: bool = False,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> _SetupContext:
+        """When called with parameters, create a new context with those parameters."""
+        cell = self._app._cell_manager.cell_context(
+            app=InternalApp(self._app),
+            frame=inspect.stack()[1].frame,
+            config=CellConfig(hide_code=hide_code),
+        )
+        self._app._setup = _SetupContext(
+            app=self._app, cell=cell, hide_code=hide_code
+        )
+        return self._app._setup
 
 
 @dataclass
@@ -212,7 +235,7 @@ class App:
             # nested applications get a unique cell prefix to disambiguate
             # their graph from other graphs
             get_context()
-            cell_prefix = str(uuid4())
+            cell_prefix = external_prefix()
         else:
             cell_prefix = ""
 
@@ -258,7 +281,8 @@ class App:
             A new `app` object with the same code.
         """
         app = App()
-        app._cell_manager = CellManager(prefix=str(uuid4()))
+        app._filename = self._filename
+        app._cell_manager = CellManager(prefix=external_prefix())
         for cell_id, code, name, config in zip(
             self._cell_manager.cell_ids(),
             self._cell_manager.codes(),
@@ -457,22 +481,34 @@ class App:
         """Provides a context manager to initialize the setup cell.
 
         This block should only be utilized at the start of a marimo notebook.
-        It's used as following:
 
+        Usage:
         ```
+        # As a property (default behavior)
         with app.setup:
             import my_libraries
             from typing import Any
 
             CONSTANT = "my constant"
+
+        # As a method with hide_code
+        with app.setup(hide_code=True):
+            import my_libraries
+            from typing import Any
+
+            CONSTANT = "my constant"
         ```
+
+        Args (when called as method):
+            hide_code: Whether to hide the setup cell's code. Defaults to False.
+            **kwargs: For forward-compatibility with future arguments.
         """
         # Get the calling context to extract the location of the cell
         frame = inspect.stack()[1].frame
         cell = self._cell_manager.cell_context(
             app=InternalApp(self), frame=frame
         )
-        self._setup = _SetupContext(cell)
+        self._setup = _SetupContext(app=self, cell=cell, hide_code=False)
         return self._setup
 
     def _unparsable_cell(
@@ -494,7 +530,7 @@ class App:
             errors: list[str] = []
             for code in self._unparsable_code:
                 try:
-                    ast.parse(dedent(code))
+                    ast_parse(dedent(code))
                 except SyntaxError as e:
                     error_line = e.text
                     error_marker: str = (
@@ -531,13 +567,6 @@ class App:
                     "This app can't be run because it has multiple "
                     f"definitions of the name {multiply_defined_names[0]}"
                 )
-            deleted_nonlocal_refs = self._graph.get_deleted_nonlocal_ref()
-            if deleted_nonlocal_refs:
-                raise DeleteNonlocalError(
-                    "This app can't be run because at least one cell "
-                    "deletes one of its refs (the ref's name is "
-                    f"{deleted_nonlocal_refs[0]})"
-                )
             self._execution_order = dataflow.topological_sort(
                 self._graph, list(self._cell_manager.valid_cell_ids())
             )
@@ -564,11 +593,133 @@ class App:
 
     def run(
         self,
+        defs: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> tuple[Sequence[Any], Mapping[str, Any]]:
-        self._maybe_initialize()
+        """
+        Run the marimo app and return its outputs and definitions.
+
+        Use this method to run marimo apps programmatically and retrieve their
+        outputs and definitions. This lets you execute notebooks from other
+        Python scripts. By providing definitions to `app.run()`, you can
+        override specific cells in the notebook with your own values.
+
+
+        Examples:
+            Consider a notebook `my_notebook.py`:
+
+            ```python
+            import marimo
+
+            app = marimo.App()
+
+            with app.setup:
+                import pandas as pd
+
+
+            @app.cell
+            def config():
+                batch_size = 32
+                learning_rate = 0.01
+                return batch_size, learning_rate
+
+
+            @app.cell
+            def process_data(pd, batch_size, learning_rate):
+                data = pd.DataFrame({"x": [1, 2, 3]})
+                result = data * batch_size * learning_rate
+                return (result,)
+
+
+            if __name__ == "__main__":
+                app.run()
+            ```
+
+            To run this app programmatically:
+
+            ```python
+            from my_notebook import app
+
+            # Run with default values
+            outputs, defs = app.run()
+            # defs["batch_size"] == 32, defs["learning_rate"] == 0.01
+
+            # Override the specific cell definitions in `config`
+            outputs, defs = app.run(
+                defs={batch_size: 64, learning_rate: 0.001}
+            )
+            # defs["batch_size"] == 64, defs["learning_rate"] == 0.001
+            ```
+
+        Definition Override Behavior:
+            When you provide definitions to `app.run()`, you are **completely
+            overriding** the definitions of cells that define those variables:
+
+            - The cells that originally defined those variables will not execute
+            - You must provide **all** the definitions that a cell would normally produce
+            - Cells that depend on the overridden variables will use your provided values
+
+        Args:
+            defs (dict[str, Any]):
+                You may pass values for any variable definitions as keyword
+                arguments. marimo will use these values instead of executing
+                the cells that would normally define them. Cells that depend
+                on these variables will use your provided values.
+            **kwargs (Any):
+                For forward-compatibility with future arguments.
+
+        Returns:
+            A tuple containing:
+            - Sequence of cell outputs (visual outputs from each cell)
+            - Mapping of variable names to their values (definitions)
+
+        Environment Variables:
+            MARIMO_SCRIPT_EDIT: If set, opens the notebook in edit mode instead
+                of running it. Requires the app to have a filename.
+        """
+        del kwargs
+        # Enabled specifically for debugging purposes.
+        # see docs.marimo.io/guides/debugging
+        if os.environ.get("MARIMO_SCRIPT_EDIT"):
+            # unset the env var to avoid recursion
+            os.environ.pop("MARIMO_SCRIPT_EDIT")
+            from marimo._cli.cli import edit
+
+            if self._filename is None:
+                raise RuntimeError(
+                    "MARIMO_SCRIPT_EDIT is set, but filename cannot be determined."
+                )
+            ctx = edit.make_context("edit", ["--watch", self._filename])
+            edit.invoke(ctx)
+            return ((), {})
+
+        try:
+            self._maybe_initialize()
+        except (CycleError, MultipleDefinitionError, UnparsableError) as e:
+            from marimo._lint import collect_messages
+
+            if self._filename is not None:
+                # Run linting checks to provide better error messages for breaking errors.
+                linter, messages = collect_messages(self._filename)
+                if messages:
+                    sys.stderr.write(messages)
+                # Re-raise the original exception but without trace
+                marimo_error = type(e)(str(e))
+                raise marimo_error from None
+            else:
+                raise
+
         glbls: dict[str, Any] = {}
         if self._setup is not None:
-            glbls = self._setup._glbls
+            glbls = {**self._setup._glbls}
+
+        if set(glbls) & set(defs or {}):
+            # Type Error is convention for bad args.
+            raise TypeError("`defs` cannot override setup cell definitions.")
+
+        if defs is not None:
+            glbls.update(defs)
+
         outputs, glbls = AppScriptRunner(
             InternalApp(self),
             filename=self._filename,
@@ -725,6 +876,10 @@ class InternalApp:
     @property
     def cell_manager(self) -> CellManager:
         return self._app._cell_manager
+
+    @property
+    def filename(self) -> str | None:
+        return self._app._filename
 
     @property
     def graph(self) -> dataflow.DirectedGraph:

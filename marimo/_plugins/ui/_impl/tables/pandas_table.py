@@ -6,7 +6,7 @@ import io
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional
 
-import narwhals.stable.v1 as nw
+import narwhals.stable.v2 as nw
 
 from marimo import _loggers
 from marimo._data.models import ExternalDataType
@@ -57,12 +57,14 @@ class PandasTableManagerFactory(TableManagerFactory):
     def create() -> type[TableManager[Any]]:
         import pandas as pd
 
-        class PandasTableManager(NarwhalsTableManager[pd.DataFrame]):
+        class PandasTableManager(NarwhalsTableManager[pd.DataFrame, Any]):
             type = "pandas"
 
             def __init__(self, data: pd.DataFrame) -> None:
                 data = _maybe_convert_geopandas_to_pandas(data)
-                self._original_data = self._handle_multi_col_indexes(data)
+                data = self._handle_multi_col_indexes(data)
+                data = self._handle_non_string_column_names(data)
+                self._original_data = data
                 super().__init__(nw.from_native(self._original_data))
 
             @cached_property
@@ -143,6 +145,28 @@ class PandasTableManagerFactory(TableManagerFactory):
                     )
 
                     index_levels = result.index.nlevels
+
+                    # Check for name conflicts between index names and column names
+                    # to avoid "cannot insert x, already exists" error
+                    conflicting_names = set(index_names) & set(result.columns)
+                    if conflicting_names:
+                        # Create new names, handling None values
+                        new_names: list[str] = []
+                        for name in result.index.names:
+                            if name in conflicting_names:
+                                new_names.append(f"{name}_index")
+                            else:
+                                new_names.append(str(name))
+
+                        # Rename the index to avoid conflict
+                        if isinstance(result.index, pd.MultiIndex):
+                            result.index = result.index.set_names(new_names)
+                        else:
+                            result.index = result.index.rename(new_names[0])
+
+                        # Update index_names to reflect the rename
+                        index_names = result.index.names
+
                     result = result.reset_index()
 
                     if unnamed_indexes:
@@ -195,8 +219,9 @@ class PandasTableManagerFactory(TableManagerFactory):
                         )
                 return PandasTableManager(_data)
 
+            @classmethod
             def _handle_multi_col_indexes(
-                self, data: pd.DataFrame
+                cls, data: pd.DataFrame
             ) -> pd.DataFrame:
                 is_multi_col_index = isinstance(data.columns, pd.MultiIndex)
                 # When in a table with selection, narwhals will convert the columns to a tuple
@@ -227,6 +252,23 @@ class PandasTableManagerFactory(TableManagerFactory):
                         )
                     return data_copy
 
+                return data
+
+            @classmethod
+            def _handle_non_string_column_names(
+                cls, data: pd.DataFrame
+            ) -> pd.DataFrame:
+                if not isinstance(data.columns, pd.Index):
+                    return data
+
+                if len(data.columns) > 0 and not isinstance(
+                    data.columns[0], str
+                ):
+                    data_copy = data.copy()
+                    data_copy.columns = pd.Index(
+                        [str(name) for name in data_copy.columns]
+                    )
+                    return data_copy
                 return data
 
             # We override the default implementation to use pandas

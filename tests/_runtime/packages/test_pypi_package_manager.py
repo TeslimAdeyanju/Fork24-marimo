@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from functools import partial
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from marimo._ast import compiler
@@ -11,6 +12,9 @@ from marimo._runtime.packages.pypi_package_manager import (
     PipPackageManager,
     UvPackageManager,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 parse_cell = partial(compiler.compile_cell, cell_id="0")
 
@@ -44,7 +48,8 @@ manager = PipPackageManager()
 async def test_install(mock_run: MagicMock):
     mock_run.return_value = MagicMock(returncode=0)
 
-    result = await manager._install("package1 package2", upgrade=False)
+    with patch.object(manager, "is_manager_installed", return_value=True):
+        result = await manager._install("package1 package2", upgrade=False)
 
     mock_run.assert_called_once_with(
         ["pip", "--python", PY_EXE, "install", "package1", "package2"],
@@ -65,7 +70,8 @@ async def test_install_failure(mock_run: MagicMock):
 async def test_uninstall(mock_run: MagicMock):
     mock_run.return_value = MagicMock(returncode=0)
 
-    result = await manager.uninstall("package1 package2")
+    with patch.object(manager, "is_manager_installed", return_value=True):
+        result = await manager.uninstall("package1 package2")
 
     mock_run.assert_called_once_with(
         [
@@ -91,12 +97,14 @@ def test_list_packages(mock_run: MagicMock):
     )
     mock_run.return_value = MagicMock(returncode=0, stdout=mock_output)
 
-    packages = manager.list_packages()
+    with patch.object(manager, "is_manager_installed", return_value=True):
+        packages = manager.list_packages()
 
     mock_run.assert_called_once_with(
         ["pip", "--python", PY_EXE, "list", "--format=json"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert len(packages) == 2
     assert packages[0] == PackageDescription(name="package1", version="1.0.0")
@@ -217,6 +225,37 @@ async def test_uv_install_not_in_project(mock_run: MagicMock):
 
 
 @patch("subprocess.run")
+@patch.object(UvPackageManager, "is_in_uv_project", False)
+async def test_uv_install_not_in_project_with_target(mock_run: MagicMock):
+    """Test UV install uses pip with target"""
+    mock_run.return_value = MagicMock(returncode=0)
+    mgr = UvPackageManager()
+
+    # Explicitly set environ, since patch doesn't work in an asynchronous
+    # context.
+    import os
+
+    os.environ["MARIMO_UV_TARGET"] = "target_path"
+    result = await mgr._install("package1 package2", upgrade=False)
+    del os.environ["MARIMO_UV_TARGET"]
+
+    mock_run.assert_called_once_with(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--target=target_path",
+            "--compile",
+            "package1",
+            "package2",
+            "-p",
+            PY_EXE,
+        ],
+    )
+    assert result is True
+
+
+@patch("subprocess.run")
 @patch.object(UvPackageManager, "is_in_uv_project", True)
 async def test_uv_install_in_project(mock_run: MagicMock):
     """Test UV install uses add subcommand when in UV project"""
@@ -279,10 +318,128 @@ def test_uv_list_packages(mock_run: MagicMock):
         ["uv", "pip", "list", "--format=json", "-p", PY_EXE],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert len(packages) == 2
     assert packages[0] == PackageDescription(name="package1", version="1.0.0")
     assert packages[1] == PackageDescription(name="package2", version="2.1.0")
+
+
+@patch.object(UvPackageManager, "dependency_tree")
+def test_uv_list_packages_with_tree_success(mock_dependency_tree: MagicMock):
+    """Test UV list packages uses uv tree when available"""
+    from marimo._server.models.packages import DependencyTreeNode
+
+    # Mock dependency_tree to return a valid tree
+    mock_tree = DependencyTreeNode(
+        name="root",
+        version="1.0.0",
+        tags=[],
+        dependencies=[
+            DependencyTreeNode(
+                name="z-package1",
+                version="1.0.0",
+                tags=[],
+                dependencies=[
+                    DependencyTreeNode(
+                        name="package3",
+                        version="3.0.0",
+                        tags=[],
+                        dependencies=[],
+                    )
+                ],
+            ),
+            DependencyTreeNode(
+                name="package2",
+                version=None,  # Test None version handling
+                tags=[],
+                dependencies=[
+                    # Duplicate package
+                    DependencyTreeNode(
+                        name="package3",
+                        version="3.0.0",
+                        tags=[],
+                        dependencies=[],
+                    )
+                ],
+            ),
+        ],
+    )
+    mock_dependency_tree.return_value = mock_tree
+
+    mgr = UvPackageManager()
+    packages = mgr.list_packages()
+
+    # Should call dependency_tree first
+    mock_dependency_tree.assert_called_once()
+
+    # Should return packages from tree
+    assert len(packages) == 3
+    assert packages[0] == PackageDescription(name="package2", version="")
+    assert packages[1] == PackageDescription(name="package3", version="3.0.0")
+    assert packages[2] == PackageDescription(
+        name="z-package1", version="1.0.0"
+    )
+
+
+@patch("subprocess.run")
+@patch.object(UvPackageManager, "dependency_tree")
+def test_uv_list_packages_tree_fallback_to_pip_list(
+    mock_dependency_tree: MagicMock, mock_run: MagicMock
+):
+    """Test UV list packages falls back to pip list when tree is None"""
+    # Mock dependency_tree to return None (fallback case)
+    mock_dependency_tree.return_value = None
+
+    # Mock subprocess for pip list
+    mock_output = json.dumps(
+        [
+            {"name": "fallback1", "version": "1.5.0"},
+            {"name": "fallback2", "version": "2.3.0"},
+        ]
+    )
+    mock_run.return_value = MagicMock(returncode=0, stdout=mock_output)
+
+    mgr = UvPackageManager()
+    packages = mgr.list_packages()
+
+    # Should try dependency_tree first
+    mock_dependency_tree.assert_called_once()
+
+    # Should fall back to subprocess call
+    mock_run.assert_called_once_with(
+        ["uv", "pip", "list", "--format=json", "-p", PY_EXE],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    # Should return packages from fallback method
+    assert len(packages) == 2
+    assert packages[0] == PackageDescription(name="fallback1", version="1.5.0")
+    assert packages[1] == PackageDescription(name="fallback2", version="2.3.0")
+
+
+@patch.object(UvPackageManager, "dependency_tree")
+def test_uv_list_packages_with_empty_tree(mock_dependency_tree: MagicMock):
+    """Test UV list packages handles empty dependency tree"""
+    from marimo._server.models.packages import DependencyTreeNode
+
+    # Mock dependency_tree to return tree with no dependencies
+    mock_tree = DependencyTreeNode(
+        name="root", version="1.0.0", tags=[], dependencies=[]
+    )
+    mock_dependency_tree.return_value = mock_tree
+
+    mgr = UvPackageManager()
+    packages = mgr.list_packages()
+
+    # Should call dependency_tree
+    mock_dependency_tree.assert_called_once()
+
+    # Should return empty list
+    assert len(packages) == 0
+    assert packages == []
 
 
 @patch.dict(
@@ -311,3 +468,115 @@ def test_uv_is_in_uv_project_uv_project_environment_mismatch():
     """Test is_in_uv_project returns False when UV_PROJECT_ENVIRONMENT doesn't match VIRTUAL_ENV"""
     mgr = UvPackageManager()
     assert mgr.is_in_uv_project is False
+
+
+# Encoding tests for Windows compatibility
+
+
+@patch("subprocess.run")
+def test_pip_list_packages_uses_utf8_encoding(mock_run: MagicMock):
+    """Test that pip list uses UTF-8 encoding to handle non-ASCII characters"""
+    mock_output = json.dumps(
+        [
+            {"name": "package-中文", "version": "1.0.0"},
+            {"name": "пакет", "version": "2.0.0"},
+        ]
+    )
+    mock_run.return_value = MagicMock(returncode=0, stdout=mock_output)
+    mgr = PipPackageManager()
+
+    with patch.object(mgr, "is_manager_installed", return_value=True):
+        packages = mgr.list_packages()
+
+    # Verify encoding='utf-8' is passed
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get("encoding") == "utf-8"
+    assert call_kwargs.get("text") is True
+
+
+@patch("subprocess.run")
+def test_uv_dependency_tree_uses_utf8_encoding(mock_run: MagicMock):
+    """Test that uv tree uses UTF-8 encoding"""
+    mock_output = "test-package v1.0.0\n"
+    mock_run.return_value = MagicMock(
+        returncode=0, stdout=mock_output, stderr=""
+    )
+    mgr = UvPackageManager()
+
+    mgr.dependency_tree(filename="test.py")
+
+    # Verify encoding='utf-8' is passed
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get("encoding") == "utf-8"
+    assert call_kwargs.get("text") is True
+
+
+@patch("subprocess.run")
+def test_uv_pip_list_uses_utf8_encoding(mock_run: MagicMock):
+    """Test that uv pip list uses UTF-8 encoding"""
+    mock_output = json.dumps([{"name": "test-pkg", "version": "1.0.0"}])
+    mock_run.return_value = MagicMock(returncode=0, stdout=mock_output)
+    mgr = UvPackageManager()
+
+    # Mock dependency_tree to return None so it falls back to pip list
+    with patch.object(mgr, "dependency_tree", return_value=None):
+        mgr.list_packages()
+
+    # Verify encoding='utf-8' is passed
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get("encoding") == "utf-8"
+    assert call_kwargs.get("text") is True
+
+
+def test_has_script_metadata_with_metadata(tmp_path: Path):
+    """Test that _has_script_metadata returns True when script has metadata"""
+    script_file = tmp_path / "script_with_metadata.py"
+    script_file.write_text(
+        """# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "requests",
+#   "pandas",
+# ]
+# ///
+
+import marimo as mo
+"""
+    )
+
+    mgr = UvPackageManager()
+    assert mgr._has_script_metadata(str(script_file)) is True
+
+
+def test_has_script_metadata_without_metadata(tmp_path: Path):
+    """Test that _has_script_metadata returns False when script has no metadata"""
+    script_file = tmp_path / "script_without_metadata.py"
+    script_file.write_text(
+        """import marimo as mo
+import pandas as pd
+
+# This is a regular comment
+# Not a script metadata block
+"""
+    )
+
+    mgr = UvPackageManager()
+    assert mgr._has_script_metadata(str(script_file)) is False
+
+
+def test_has_script_metadata_nonexistent_file():
+    """Test that _has_script_metadata returns False for nonexistent files"""
+    mgr = UvPackageManager()
+    assert mgr._has_script_metadata("/nonexistent/path/to/file.py") is False
+
+
+def test_has_script_metadata_binary_file(tmp_path: Path):
+    """Test that _has_script_metadata returns False for binary files"""
+    binary_file = tmp_path / "binary.bin"
+    binary_file.write_bytes(b"\x00\x01\x02\x03\xff\xfe\xfd")
+
+    mgr = UvPackageManager()
+    assert mgr._has_script_metadata(str(binary_file)) is False

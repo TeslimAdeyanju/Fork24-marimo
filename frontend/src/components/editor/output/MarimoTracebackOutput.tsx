@@ -3,7 +3,6 @@
 import { type DOMNode, Element, Text } from "html-react-parser";
 import { useAtomValue } from "jotai";
 import {
-  BugIcon,
   BugPlayIcon,
   ChevronDown,
   CopyIcon,
@@ -30,7 +29,8 @@ import { getCellEditorView } from "@/core/cells/cells";
 import type { CellId } from "@/core/cells/ids";
 import { insertDebuggerAtLine } from "@/core/codemirror/editing/debugging";
 import { aiEnabledAtom } from "@/core/config/config";
-import { sendPdb } from "@/core/network/requests";
+import { getRequestClient } from "@/core/network/requests";
+import { isStaticNotebook } from "@/core/static/static-state";
 import { isWasm } from "@/core/wasm/utils";
 import { renderHTML } from "@/plugins/core/RenderHTML";
 import { copyToClipboard } from "@/utils/copy";
@@ -40,12 +40,14 @@ import {
   getTracebackInfo,
 } from "@/utils/traceback";
 import { cn } from "../../../utils/cn";
+import { AIFixButton } from "../errors/auto-fix";
 import { CellLinkTraceback } from "../links/cell-link";
+import type { OnRefactorWithAI } from "../Output";
 
 interface Props {
   cellId: CellId | undefined;
   traceback: string;
-  onRefactorWithAI?: (opts: { prompt: string }) => void;
+  onRefactorWithAI?: OnRefactorWithAI;
 }
 
 const KEY = "item";
@@ -56,7 +58,6 @@ const KEY = "item";
 export const MarimoTracebackOutput = ({
   onRefactorWithAI,
   traceback,
-  cellId,
 }: Props): JSX.Element => {
   const htmlTraceback = renderHTML({
     html: traceback,
@@ -70,9 +71,21 @@ export const MarimoTracebackOutput = ({
   // Get last traceback info
   const tracebackInfo = extractAllTracebackInfo(traceback)?.at(0);
 
-  const handleRefactorWithAI = () => {
+  // Don't show in wasm or static notebooks
+  const showDebugger =
+    tracebackInfo &&
+    tracebackInfo.kind === "cell" &&
+    !isWasm() &&
+    !isStaticNotebook();
+
+  const showAIFix = onRefactorWithAI && aiEnabled && !isStaticNotebook();
+
+  const showSearch = !isStaticNotebook();
+
+  const handleRefactorWithAI = (triggerImmediately: boolean) => {
     onRefactorWithAI?.({
       prompt: `My code gives the following error:\n\n${lastTracebackLine}`,
+      triggerImmediately,
     });
   };
 
@@ -88,7 +101,7 @@ export const MarimoTracebackOutput = ({
           >
             <ChevronDown
               className={cn(
-                "h-4 w-4 text-muted-foreground transition-transform duration-200 flex-shrink-0",
+                "h-4 w-4 text-muted-foreground transition-transform duration-200 shrink-0",
                 expanded ? "rotate-180" : "rotate-0",
               )}
             />
@@ -103,19 +116,20 @@ export const MarimoTracebackOutput = ({
         </AccordionItem>
       </Accordion>
       <div className="flex gap-2">
-        {onRefactorWithAI && aiEnabled && (
-          <Button size="xs" variant="outline" onClick={handleRefactorWithAI}>
-            <BugIcon className="h-3 w-3 mr-2" />
-            Fix with AI
-          </Button>
+        {showAIFix && (
+          <AIFixButton
+            tooltip="Fix with AI"
+            openPrompt={() => handleRefactorWithAI(false)}
+            applyAutofix={() => handleRefactorWithAI(true)}
+          />
         )}
-        {tracebackInfo && !isWasm() && (
+        {showDebugger && (
           <Tooltip content={"Attach pdb to the exception point."}>
             <Button
               size="xs"
               variant="outline"
               onClick={() => {
-                sendPdb({ cellId: tracebackInfo.cellId });
+                getRequestClient().sendPdb({ cellId: tracebackInfo.cellId });
               }}
             >
               <BugPlayIcon className="h-3 w-3 mr-2" />
@@ -123,50 +137,52 @@ export const MarimoTracebackOutput = ({
             </Button>
           </Tooltip>
         )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
-            <Button size="xs" variant="text">
-              Get help
-              <ChevronDown className="h-3 w-3 ml-1" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuItem asChild={true}>
-              <a
-                target="_blank"
-                href={`https://www.google.com/search?q=${encodeURIComponent(lastTracebackLine)}`}
-                rel="noreferrer"
+        {showSearch && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button size="xs" variant="text">
+                Get help
+                <ChevronDown className="h-3 w-3 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem asChild={true}>
+                <a
+                  target="_blank"
+                  href={`https://www.google.com/search?q=${encodeURIComponent(lastTracebackLine)}`}
+                  rel="noreferrer"
+                >
+                  <SearchIcon className="h-4 w-4 mr-2" />
+                  Search on Google
+                  <ExternalLinkIcon className="h-3 w-3 ml-auto" />
+                </a>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild={true}>
+                <a
+                  target="_blank"
+                  href="https://marimo.io/discord?ref=notebook"
+                  rel="noopener"
+                >
+                  <MessageCircleIcon className="h-4 w-4 mr-2" />
+                  Ask in Discord
+                  <ExternalLinkIcon className="h-3 w-3 ml-auto" />
+                </a>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  // Strip HTML from the traceback
+                  const div = document.createElement("div");
+                  div.innerHTML = traceback;
+                  const textContent = div.textContent || "";
+                  copyToClipboard(textContent);
+                }}
               >
-                <SearchIcon className="h-4 w-4 mr-2" />
-                Search on Google
-                <ExternalLinkIcon className="h-3 w-3 ml-auto" />
-              </a>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild={true}>
-              <a
-                target="_blank"
-                href="https://marimo.io/discord?ref=notebook"
-                rel="noopener"
-              >
-                <MessageCircleIcon className="h-4 w-4 mr-2" />
-                Ask in Discord
-                <ExternalLinkIcon className="h-3 w-3 ml-auto" />
-              </a>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => {
-                // Strip HTML from the traceback
-                const div = document.createElement("div");
-                div.innerHTML = traceback;
-                const textContent = div.textContent || "";
-                copyToClipboard(textContent);
-              }}
-            >
-              <CopyIcon className="h-4 w-4 mr-2" />
-              Copy to clipboard
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+                <CopyIcon className="h-4 w-4 mr-2" />
+                Copy to clipboard
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </div>
   );
@@ -181,7 +197,7 @@ function lastLine(text: string): string {
 
 export const replaceTracebackFilenames = (domNode: DOMNode) => {
   const info = getTracebackInfo(domNode);
-  if (info) {
+  if (info?.kind === "cell") {
     const tooltipContent = <InsertBreakpointContent />;
     return (
       <span className="nb">
@@ -210,6 +226,21 @@ export const replaceTracebackFilenames = (domNode: DOMNode) => {
           )}
         </span>
       </span>
+    );
+  }
+  if (info?.kind === "file") {
+    return (
+      <div
+        className="inline-block cursor-pointer text-destructive hover:underline"
+        onClick={(_) => {
+          getRequestClient().openFile({
+            path: info.filePath,
+            lineNumber: info.lineNumber,
+          });
+        }}
+      >
+        <span className="nb">"{info.filePath}"</span>
+      </div>
     );
   }
 };

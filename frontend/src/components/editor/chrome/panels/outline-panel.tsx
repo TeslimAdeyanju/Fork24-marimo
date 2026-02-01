@@ -13,7 +13,7 @@ import {
   useActiveOutline,
 } from "./outline/useActiveOutline";
 
-export const OutlinePanel: React.FC = () => {
+const OutlinePanel: React.FC = () => {
   const { items } = useAtomValue(notebookOutline);
   const headerElements = useMemo(() => findOutlineElements(items), [items]);
   const { activeHeaderId, activeOccurrences } =
@@ -22,7 +22,7 @@ export const OutlinePanel: React.FC = () => {
   if (items.length === 0) {
     return (
       <PanelEmptyState
-        title="No outline"
+        title="No outline found"
         description="Add markdown headings to your notebook to create an outline."
         icon={<ScrollTextIcon />}
       />
@@ -37,3 +37,5 @@ export const OutlinePanel: React.FC = () => {
     />
   );
 };
+
+export default OutlinePanel;

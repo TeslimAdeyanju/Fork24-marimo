@@ -1,93 +1,118 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
+import type { UIMessage } from "@ai-sdk/react";
 import { useChat } from "@ai-sdk/react";
+import { storePrompt } from "@marimo-team/codemirror-ai";
 import type { ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import type { Message } from "ai/react";
-import { useAtom, useAtomValue } from "jotai";
+import { DefaultChatTransport, type ToolUIPart } from "ai";
+import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import {
+  AtSignIcon,
   BotMessageSquareIcon,
-  ClockIcon,
   Loader2,
+  PaperclipIcon,
   PlusIcon,
   SendIcon,
   SettingsIcon,
   SquareIcon,
 } from "lucide-react";
-import {
-  type Dispatch,
-  memo,
-  type SetStateAction,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { memo, useEffect, useRef, useState } from "react";
+import useEvent from "react-use-event-hook";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
-import { addMessageToChat } from "@/core/ai/chat-utils";
+import { replaceMessagesInChat } from "@/core/ai/chat-utils";
+import { useModelChange } from "@/core/ai/config";
+import { AiModelId, type ProviderId } from "@/core/ai/ids/ids";
+import { useStagedAICellsActions } from "@/core/ai/staged-cells";
 import {
   activeChatAtom,
   type Chat,
-  type ChatState,
+  type ChatId,
   chatStateAtom,
 } from "@/core/ai/state";
-import { getCodes } from "@/core/codemirror/copilot/getCodes";
-import { aiAtom, aiEnabledAtom, userConfigAtom } from "@/core/config/config";
-import type { UserConfig } from "@/core/config/config-schema";
+import type { ToolNotebookContext } from "@/core/ai/tools/base";
+import {
+  type CopilotMode,
+  FRONTEND_TOOL_REGISTRY,
+} from "@/core/ai/tools/registry";
+import { useCellActions } from "@/core/cells/cells";
+import { aiAtom, aiEnabledAtom } from "@/core/config/config";
+import { DEFAULT_AI_MODEL } from "@/core/config/config-schema";
 import { FeatureFlagged } from "@/core/config/feature-flag";
-import { invokeAiTool, saveUserConfig } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { useRuntimeManager } from "@/core/runtime/config";
 import { ErrorBanner } from "@/plugins/impl/common/error-banner";
-import { type ResolvedTheme, useTheme } from "@/theme/useTheme";
 import { cn } from "@/utils/cn";
-import { timeAgo } from "@/utils/dates";
 import { Logger } from "@/utils/Logger";
-import { generateUUID } from "@/utils/uuid";
-import { KNOWN_AI_MODELS } from "../app-config/constants";
+import { AIModelDropdown } from "../ai/ai-model-dropdown";
 import { useOpenSettingsToTab } from "../app-config/state";
 import { PromptInput } from "../editor/ai/add-cell-with-ai";
-import { getAICompletionBody } from "../editor/ai/completion-utils";
+import {
+  addContextCompletion,
+  CONTEXT_TRIGGER,
+} from "../editor/ai/completion-utils";
 import { PanelEmptyState } from "../editor/chrome/panels/empty-state";
 import { CopyClipboardIcon } from "../icons/copy-icon";
+import { MCPStatusIndicator } from "../mcp/mcp-status-indicator";
+import { Input } from "../ui/input";
 import { Tooltip, TooltipProvider } from "../ui/tooltip";
+import { toast } from "../ui/use-toast";
+import { AttachmentRenderer, FileAttachmentPill } from "./chat-components";
+import { ChatHistoryPopover } from "./chat-history-popover";
+import {
+  buildCompletionRequestBody,
+  convertToFileUIPart,
+  generateChatTitle,
+  handleToolCall,
+  hasPendingToolCalls,
+  isLastMessageReasoning,
+} from "./chat-utils";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ReasoningAccordion } from "./reasoning-accordion";
 import { ToolCallAccordion } from "./tool-call-accordion";
 
+// Default mode for the AI
+const DEFAULT_MODE = "manual";
+
+// We need to modify the backend to support attachments for other providers
+// And other types
+const PROVIDERS_THAT_SUPPORT_ATTACHMENTS = new Set<ProviderId>([
+  "openai",
+  "google",
+  "anthropic",
+]);
+const SUPPORTED_ATTACHMENT_TYPES = ["image/*", "text/*"];
+const MAX_ATTACHMENT_SIZE = 1024 * 1024 * 50; // 50MB
+
 interface ChatHeaderProps {
   onNewChat: () => void;
-  activeChatId: string | undefined;
-  setActiveChat: (id: string | null) => void;
-  chats: Chat[];
+  activeChatId: ChatId | undefined;
+  setActiveChat: (id: ChatId | null) => void;
 }
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({
   onNewChat,
   activeChatId,
   setActiveChat,
-  chats,
 }) => {
   const { handleClick } = useOpenSettingsToTab();
 
   return (
-    <div className="flex border-b px-2 py-1 justify-between flex-shrink-0 items-center">
+    <div className="flex border-b px-2 py-1 justify-between shrink-0 items-center">
       <Tooltip content="New chat">
         <Button variant="text" size="icon" onClick={onNewChat}>
           <PlusIcon className="h-4 w-4" />
         </Button>
       </Tooltip>
       <div className="flex items-center gap-2">
+        <MCPStatusIndicator />
         <Tooltip content="AI Settings">
           <Button
             variant="text"
@@ -98,76 +123,42 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <SettingsIcon className="h-4 w-4" />
           </Button>
         </Tooltip>
-        <Popover>
-          <Tooltip content="Previous chats">
-            <PopoverTrigger asChild={true}>
-              <Button variant="text" size="icon">
-                <ClockIcon className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-          </Tooltip>
-          <PopoverContent className="w-[520px] p-0" align="start" side="right">
-            <ScrollArea className="h-[500px] p-4">
-              <div className="space-y-4">
-                {chats.length === 0 && (
-                  <PanelEmptyState
-                    title="No chats yet"
-                    description="Start a new chat to get started"
-                    icon={<BotMessageSquareIcon />}
-                  />
-                )}
-                {chats.map((chat) => (
-                  <button
-                    key={chat.id}
-                    className={cn(
-                      "w-full p-3 rounded-md cursor-pointer hover:bg-accent text-left",
-                      chat.id === activeChatId && "bg-accent",
-                    )}
-                    onClick={() => {
-                      setActiveChat(chat.id);
-                    }}
-                    type="button"
-                  >
-                    <div className="font-medium">{chat.title}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {timeAgo(chat.updatedAt)}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </ScrollArea>
-          </PopoverContent>
-        </Popover>
+        <ChatHistoryPopover
+          activeChatId={activeChatId}
+          setActiveChat={setActiveChat}
+        />
       </div>
     </div>
   );
 };
 
 interface ChatMessageProps {
-  message: Message;
+  message: UIMessage;
   index: number;
-  theme: ResolvedTheme;
   onEdit: (index: number, newValue: string) => void;
-  setChatState: Dispatch<SetStateAction<ChatState>>;
-  chatState: ChatState;
   isStreamingReasoning: boolean;
-  totalMessages: number;
+  isLast: boolean;
 }
 
-const ChatMessage: React.FC<ChatMessageProps> = memo(
-  ({ message, index, theme, onEdit, isStreamingReasoning, totalMessages }) => (
-    <div
-      className={cn(
-        "flex group relative",
-        message.role === "user" ? "justify-end" : "justify-start",
-      )}
-    >
-      {message.role === "user" ? (
+function isToolPart(part: UIMessage["parts"][number]): part is ToolUIPart {
+  return part.type.startsWith("tool-");
+}
+
+const ChatMessageDisplay: React.FC<ChatMessageProps> = memo(
+  ({ message, index, onEdit, isStreamingReasoning, isLast }) => {
+    const renderUserMessage = (message: UIMessage) => {
+      const textParts = message.parts?.filter((p) => p.type === "text");
+      const content = textParts?.map((p) => p.text).join("\n");
+      const fileParts = message.parts?.filter((p) => p.type === "file");
+
+      return (
         <div className="w-[95%] bg-background border p-1 rounded-sm">
+          {fileParts?.map((filePart, idx) => (
+            <AttachmentRenderer attachment={filePart} key={idx} />
+          ))}
           <PromptInput
             key={message.id}
-            value={message.content}
-            theme={theme}
+            value={content}
             placeholder="Type your message..."
             onChange={() => {
               // noop
@@ -183,12 +174,33 @@ const ChatMessage: React.FC<ChatMessageProps> = memo(
             }}
           />
         </div>
-      ) : (
+      );
+    };
+
+    const renderOtherMessage = (message: UIMessage) => {
+      const textParts = message.parts.filter((p) => p.type === "text");
+      const content = textParts.map((p) => p.text).join("\n");
+
+      return (
         <div className="w-[95%] break-words">
           <div className="absolute right-1 top-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <CopyClipboardIcon className="h-3 w-3" value={message.content} />
+            <CopyClipboardIcon className="h-3 w-3" value={content || ""} />
           </div>
-          {message.parts?.map((part, i) => {
+          {message.parts.map((part, i) => {
+            if (isToolPart(part)) {
+              return (
+                <ToolCallAccordion
+                  key={i}
+                  index={i}
+                  toolName={part.type}
+                  result={part.output}
+                  className="my-2"
+                  state={part.state}
+                  input={part.input}
+                />
+              );
+            }
+
             switch (part.type) {
               case "text":
                 return <MarkdownRenderer key={i} content={part.text} />;
@@ -196,168 +208,226 @@ const ChatMessage: React.FC<ChatMessageProps> = memo(
               case "reasoning":
                 return (
                   <ReasoningAccordion
-                    reasoning={part.reasoning}
+                    reasoning={part.text}
                     key={i}
                     index={i}
                     isStreaming={
-                      index === totalMessages - 1 &&
+                      isLast &&
                       isStreamingReasoning &&
                       // If there are multiple reasoning parts, only show the last one
-                      i === (message.parts?.length || 0) - 1
+                      i === (message.parts.length || 0) - 1
                     }
                   />
                 );
 
-              case "tool-invocation":
+              case "dynamic-tool":
                 return (
                   <ToolCallAccordion
                     key={i}
                     index={i}
-                    toolName={part.toolInvocation.toolName}
-                    result={
-                      part.toolInvocation.state === "result"
-                        ? part.toolInvocation.result
-                        : null
-                    }
-                    state={part.toolInvocation.state}
+                    toolName={part.type}
+                    result={part.output}
+                    state={part.state}
+                    input={part.input}
+                    className="my-2"
                   />
                 );
 
+              // These are cryptographic signatures, so we don't need to render them
+              case "data-reasoning-signature":
+                return null;
+
               /* handle other part types … */
               default:
-                return null;
+                if (part.type.startsWith("data-")) {
+                  Logger.log("Found data part", part);
+                  return null;
+                }
+
+                Logger.error("Unhandled part type:", part.type);
+                try {
+                  return (
+                    <div className="text-xs text-muted-foreground" key={i}>
+                      <MarkdownRenderer
+                        content={JSON.stringify(part, null, 2)}
+                      />
+                    </div>
+                  );
+                } catch (error) {
+                  Logger.error("Error rendering part:", part.type, error);
+                  return null;
+                }
             }
           })}
         </div>
-      )}
-    </div>
-  ),
+      );
+    };
+
+    return (
+      <div
+        className={cn(
+          "flex group relative",
+          message.role === "user" ? "justify-end" : "justify-start",
+        )}
+      >
+        {message.role === "user"
+          ? renderUserMessage(message)
+          : renderOtherMessage(message)}
+      </div>
+    );
+  },
 );
-ChatMessage.displayName = "ChatMessage";
+ChatMessageDisplay.displayName = "ChatMessage";
 
 interface ChatInputFooterProps {
-  input: string;
+  isEmpty: boolean;
   onSendClick: () => void;
   isLoading: boolean;
   onStop: () => void;
+  onAddFiles: (files: File[]) => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onAddContext: () => void;
 }
 
 const ChatInputFooter: React.FC<ChatInputFooterProps> = memo(
-  ({ input, onSendClick, isLoading, onStop }) => {
+  ({
+    isEmpty,
+    onSendClick,
+    isLoading,
+    onStop,
+    fileInputRef,
+    onAddFiles,
+    onAddContext,
+  }) => {
     const ai = useAtomValue(aiAtom);
-    const [userConfig, setUserConfig] = useAtom(userConfigAtom);
-    const currentMode = ai?.mode || "manual";
-    const currentModel = ai?.open_ai?.model || "o4-mini";
+    const currentMode = ai?.mode || DEFAULT_MODE;
+    const currentModel = ai?.models?.chat_model || DEFAULT_AI_MODEL;
+    const currentProvider = AiModelId.parse(currentModel).providerId;
 
-    const modeOptions = [
+    const { saveModeChange } = useModelChange();
+
+    const modeOptions: {
+      value: CopilotMode;
+      label: string;
+      subtitle: string;
+    }[] = [
       {
         value: "ask",
         label: "Ask",
-        subtitle: "Read-only tools",
+        subtitle:
+          "Use AI with access to read-only tools like documentation search",
       },
       {
         value: "manual",
         label: "Manual",
-        subtitle: "No tools",
+        subtitle: "Pure chat, no tool usage",
+      },
+      {
+        value: "agent",
+        label: "Agent (beta)",
+        subtitle: "Use AI with access to read and write tools",
       },
     ];
 
-    const handleModeChange = async (newMode: "ask" | "manual") => {
-      const newConfig: UserConfig = {
-        ...userConfig,
-        ai: {
-          ...userConfig.ai,
-          mode: newMode,
-        },
-      };
-      saveConfig(newConfig);
-    };
-
-    const handleModelChange = async (newModel: string) => {
-      const newConfig: UserConfig = {
-        ...userConfig,
-        ai: {
-          ...userConfig.ai,
-          open_ai: {
-            ...userConfig.ai?.open_ai,
-            model: newModel,
-          },
-        },
-      };
-      saveConfig(newConfig);
-    };
-
-    const saveConfig = async (newConfig: UserConfig) => {
-      await saveUserConfig({ config: newConfig }).then(() => {
-        setUserConfig(newConfig);
-      });
-    };
+    const isAttachmentSupported =
+      PROVIDERS_THAT_SUPPORT_ATTACHMENTS.has(currentProvider);
 
     return (
-      <div className="px-3 py-2 border-t border-border/20 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <FeatureFlagged feature="mcp_docs">
-            <Select value={currentMode} onValueChange={handleModeChange}>
-              <SelectTrigger className="h-6 text-xs border-border !shadow-none !ring-0 bg-muted hover:bg-muted/30 py-0 px-2 gap-1">
-                <SelectValue placeholder="manual" />
-              </SelectTrigger>
-              <SelectContent>
-                {modeOptions.map((option) => (
-                  <SelectItem
-                    key={option.value}
-                    value={option.value}
-                    className="text-xs"
-                    subtitle={
-                      <div className="text-muted-foreground text-xs pl-2">
-                        {option.subtitle}
-                      </div>
-                    }
+      <TooltipProvider>
+        <div className="px-3 py-2 border-t border-border/20 flex flex-row items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FeatureFlagged feature="chat_modes">
+              <Select value={currentMode} onValueChange={saveModeChange}>
+                <SelectTrigger className="h-6 text-xs border-border shadow-none! ring-0! bg-muted hover:bg-muted/30 py-0 px-2 gap-1 capitalize">
+                  {currentMode}
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectLabel>AI Mode</SelectLabel>
+                    {modeOptions.map((option) => (
+                      <SelectItem
+                        key={option.value}
+                        value={option.value}
+                        className="text-xs"
+                      >
+                        <div className="flex flex-col">
+                          {option.label}
+                          <div className="text-muted-foreground text-xs pt-1 block">
+                            {option.subtitle}
+                          </div>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </FeatureFlagged>
+            <AIModelDropdown
+              placeholder="Model"
+              triggerClassName="h-6 text-xs shadow-none! ring-0! bg-muted hover:bg-muted/30 rounded-sm"
+              iconSize="small"
+              showAddCustomModelDocs={true}
+              forRole="chat"
+            />
+          </div>
+          <div className="flex flex-row">
+            <Tooltip content="Add context">
+              <Button
+                variant="text"
+                size="icon"
+                onClick={onAddContext}
+                disabled={isLoading}
+              >
+                <AtSignIcon className="h-3.5 w-3.5" />
+              </Button>
+            </Tooltip>
+            {isAttachmentSupported && (
+              <>
+                <Tooltip content="Attach a file">
+                  <Button
+                    variant="text"
+                    size="icon"
+                    className="cursor-pointer"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Attach a file"
+                    disabled={isLoading}
                   >
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FeatureFlagged>
-          <Select value={currentModel} onValueChange={handleModelChange}>
-            <SelectTrigger className="h-6 text-xs border-border !shadow-none !ring-0 bg-muted hover:bg-muted/30 py-0 px-2 gap-1">
-              <SelectValue placeholder="Model" />
-            </SelectTrigger>
-            <SelectContent>
-              {/* Show current model if it's not in the known models list */}
-              {!(KNOWN_AI_MODELS as readonly string[]).includes(
-                currentModel,
-              ) && (
-                <SelectItem
-                  key={currentModel}
-                  value={currentModel}
-                  className="text-sm"
-                >
-                  {currentModel}
-                </SelectItem>
-              )}
-              {KNOWN_AI_MODELS.map((model) => (
-                <SelectItem key={model} value={model} className="text-sm">
-                  {model}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+                    <PaperclipIcon className="h-3.5 w-3.5" />
+                  </Button>
+                </Tooltip>
+                <Input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple={true}
+                  hidden={true}
+                  onChange={(event) => {
+                    if (event.target.files) {
+                      onAddFiles([...event.target.files]);
+                    }
+                  }}
+                  accept={SUPPORTED_ATTACHMENT_TYPES.join(",")}
+                />
+              </>
+            )}
+
+            <Tooltip content={isLoading ? "Stop" : "Submit"}>
+              <Button
+                variant="text"
+                size="sm"
+                className="h-6 w-6 p-0 hover:bg-muted/30 cursor-pointer"
+                onClick={isLoading ? onStop : onSendClick}
+                disabled={isLoading ? false : isEmpty}
+              >
+                {isLoading ? (
+                  <SquareIcon className="h-3 w-3 fill-current" />
+                ) : (
+                  <SendIcon className="h-3 w-3" />
+                )}
+              </Button>
+            </Tooltip>
+          </div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 w-6 p-0 hover:bg-muted/30"
-          onClick={isLoading ? onStop : onSendClick}
-          disabled={isLoading ? false : !input.trim()}
-        >
-          {isLoading ? (
-            <SquareIcon className="h-3 w-3 fill-current" />
-          ) : (
-            <SendIcon className="h-3 w-3" />
-          )}
-        </Button>
-      </div>
+      </TooltipProvider>
     );
   },
 );
@@ -365,40 +435,60 @@ const ChatInputFooter: React.FC<ChatInputFooterProps> = memo(
 ChatInputFooter.displayName = "ChatInputFooter";
 
 interface ChatInputProps {
+  placeholder?: string;
   input: string;
+  inputClassName?: string;
   setInput: (value: string) => void;
   onSubmit: (e: KeyboardEvent | undefined, value: string) => void;
-  theme: ResolvedTheme;
   inputRef: React.RefObject<ReactCodeMirrorRef | null>;
   isLoading: boolean;
   onStop: () => void;
+  onClose: () => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  onAddFiles: (files: File[]) => void;
 }
 
 const ChatInput: React.FC<ChatInputProps> = memo(
-  ({ input, setInput, onSubmit, theme, inputRef, isLoading, onStop }) => {
-    const handleSendClick = () => {
+  ({
+    placeholder,
+    input,
+    inputClassName,
+    setInput,
+    onSubmit,
+    inputRef,
+    isLoading,
+    onStop,
+    fileInputRef,
+    onAddFiles,
+    onClose,
+  }) => {
+    const handleSendClick = useEvent(() => {
       if (input.trim()) {
         onSubmit(undefined, input);
       }
-    };
+    });
 
     return (
-      <div className="border-t relative flex-shrink-0 min-h-[80px] flex flex-col">
-        <div className="px-2 py-3 flex-1">
+      <div className="relative shrink-0 min-h-[80px] flex flex-col border-t">
+        <div className={cn("px-2 py-3 flex-1", inputClassName)}>
           <PromptInput
+            inputRef={inputRef}
             value={input}
             onChange={setInput}
             onSubmit={onSubmit}
-            onClose={() => inputRef.current?.editor?.blur()}
-            theme={theme}
-            placeholder="Type your message..."
+            onClose={onClose}
+            onAddFiles={onAddFiles}
+            placeholder={placeholder || "Type your message..."}
           />
         </div>
         <ChatInputFooter
-          input={input}
+          isEmpty={!input.trim()}
+          onAddContext={() => addContextCompletion(inputRef)}
           onSendClick={handleSendClick}
           isLoading={isLoading}
           onStop={onStop}
+          fileInputRef={fileInputRef}
+          onAddFiles={onAddFiles}
         />
       </div>
     );
@@ -407,7 +497,7 @@ const ChatInput: React.FC<ChatInputProps> = memo(
 
 ChatInput.displayName = "ChatInput";
 
-export const ChatPanel = () => {
+const ChatPanel = () => {
   const aiEnabled = useAtomValue(aiEnabledAtom);
   const { handleClick } = useOpenSettingsToTab();
 
@@ -430,149 +520,123 @@ export const ChatPanel = () => {
 };
 
 const ChatPanelBody = () => {
-  const [chatState, setChatState] = useAtom(chatStateAtom);
+  const setChatState = useSetAtom(chatStateAtom);
   const [activeChat, setActiveChat] = useAtom(activeChatAtom);
+  const [input, setInput] = useState("");
   const [newThreadInput, setNewThreadInput] = useState("");
+  const [files, setFiles] = useState<File[]>();
   const newThreadInputRef = useRef<ReactCodeMirrorRef>(null);
   const newMessageInputRef = useRef<ReactCodeMirrorRef>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { theme } = useTheme();
   const runtimeManager = useRuntimeManager();
+  const { invokeAiTool, sendRun } = useRequestClient();
+
+  const activeChatId = activeChat?.id;
+  const store = useStore();
+
+  const { addStagedCell } = useStagedAICellsActions();
+  const { createNewCell, prepareForRun } = useCellActions();
+  const toolContext: ToolNotebookContext = {
+    addStagedCell,
+    createNewCell,
+    prepareForRun,
+    sendRun,
+    store,
+  };
 
   const {
     messages,
-    input,
-    setInput,
-    setMessages,
-    append,
-    handleSubmit,
+    sendMessage,
     error,
     status,
-    reload,
+    regenerate,
     stop,
+    addToolResult,
+    id: chatId,
   } = useChat({
-    id: activeChat?.id,
-    maxSteps: 10,
-    initialMessages: activeChat?.messages || [],
-    keepLastMessageOnError: true,
-    // Throttle the messages and data updates to 100ms
-    // experimental_throttle: 100,
-    api: runtimeManager.getAiURL("chat").toString(),
-    headers: runtimeManager.headers(),
-    experimental_prepareRequestBody: (options) => {
-      return {
-        ...options,
-        ...getAICompletionBody({
-          input: options.messages.map((m) => m.content).join("\n"),
-        }),
-        includeOtherCode: getCodes(""),
-      };
-    },
-    onFinish: (message) => {
-      setChatState((prev) => {
-        return addMessageToChat(
-          prev,
-          prev.activeChatId,
-          message.id,
-          "assistant",
-          message.content,
-          message.parts,
+    id: activeChatId,
+    sendAutomaticallyWhen: ({ messages }) => hasPendingToolCalls(messages),
+    messages: activeChat?.messages || [], // initial messages
+    transport: new DefaultChatTransport({
+      api: runtimeManager.getAiURL("chat").toString(),
+      headers: runtimeManager.headers(),
+      prepareSendMessagesRequest: async (options) => {
+        const completionBody = await buildCompletionRequestBody(
+          options.messages,
         );
+
+        return {
+          body: {
+            tools: FRONTEND_TOOL_REGISTRY.getToolSchemas(),
+            ...options,
+            ...completionBody,
+          },
+        };
+      },
+    }),
+    onFinish: ({ messages }) => {
+      setChatState((prev) => {
+        return replaceMessagesInChat({
+          chatState: prev,
+          chatId: prev.activeChatId,
+          messages: messages,
+        });
       });
     },
     onToolCall: async ({ toolCall }) => {
-      try {
-        const response = await invokeAiTool({
-          toolName: toolCall.toolName,
-          arguments: toolCall.args as Record<string, never>,
-        });
-
-        // This response triggers the onFinish callback
-        return response.result || response.error;
-      } catch (error) {
-        Logger.error("Tool call failed:", error);
-        return `Error: ${error instanceof Error ? error.message : String(error)}`;
+      // Dynamic tool calls will throw an error for toolName
+      // https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage#client-side-page
+      if (toolCall.dynamic) {
+        Logger.debug("Skipping dynamic tool call", toolCall);
+        return;
       }
+
+      await handleToolCall({
+        invokeAiTool,
+        addToolResult,
+        toolCall: {
+          toolName: toolCall.toolName,
+          toolCallId: toolCall.toolCallId,
+          input: toolCall.input as Record<string, never>,
+        },
+        toolContext,
+      });
     },
     onError: (error) => {
       Logger.error("An error occurred:", error);
     },
-    onResponse: (response) => {
-      Logger.debug("Received HTTP response from server:", response);
-    },
+  });
+
+  const onAddFiles = useEvent((files: File[]) => {
+    if (files.length === 0) {
+      return;
+    }
+
+    let fileSize = 0;
+    for (const file of files) {
+      fileSize += file.size;
+    }
+
+    if (fileSize > MAX_ATTACHMENT_SIZE) {
+      toast({
+        title: "File size exceeds 50MB limit",
+        description: "Please remove some files and try again.",
+      });
+      return;
+    }
+
+    setFiles((prev) => [...(prev ?? []), ...files]);
+  });
+
+  const removeFile = useEvent((file: File) => {
+    if (files) {
+      setFiles(files.filter((f) => f !== file));
+    }
   });
 
   const isLoading = status === "submitted" || status === "streaming";
-
-  // Sync user messages from useChat to storage when they become available
-  useEffect(() => {
-    if (!chatState.activeChatId || messages.length === 0) {
-      return;
-    }
-
-    // Only sync if the last message is from a user
-    const lastMessage = messages[messages.length - 1];
-    if (lastMessage?.role !== "user") {
-      return;
-    }
-
-    const currentChat = chatState.chats.find(
-      (c) => c.id === chatState.activeChatId,
-    );
-    if (!currentChat) {
-      return;
-    }
-
-    const storedMessageIds = new Set(currentChat.messages.map((m) => m.id));
-
-    // Find user messages from useChat that aren't in storage yet
-    const missingUserMessages = messages.filter(
-      (m) => m.role === "user" && !storedMessageIds.has(m.id),
-    );
-
-    if (missingUserMessages.length > 0) {
-      setChatState((prev) => {
-        let result = prev;
-
-        for (const userMessage of missingUserMessages) {
-          result = addMessageToChat(
-            result,
-            prev.activeChatId,
-            userMessage.id,
-            "user",
-            userMessage.content,
-          );
-        }
-
-        return result;
-      });
-    }
-  }, [messages, chatState.activeChatId, chatState.chats, setChatState]);
-
-  const isLastMessageReasoning = (messages: Message[]): boolean => {
-    if (messages.length === 0) {
-      return false;
-    }
-
-    const lastMessage = messages.at(-1);
-    if (!lastMessage) {
-      return false;
-    }
-
-    if (lastMessage.role !== "assistant" || !lastMessage.parts) {
-      return false;
-    }
-
-    const parts = lastMessage.parts;
-    if (parts.length === 0) {
-      return false;
-    }
-
-    // Check if the last part is reasoning
-    const lastPart = parts[parts.length - 1];
-    return lastPart.type === "reasoning";
-  };
 
   // Check if we're currently streaming reasoning in the latest message
   const isStreamingReasoning =
@@ -588,90 +652,154 @@ const ChatPanelBody = () => {
     };
 
     requestAnimationFrame(scrollToBottom);
-  }, [chatState.activeChatId]);
+  }, [activeChatId]);
 
-  const createNewThread = (initialMessage: string) => {
-    const CURRENT_TIME = Date.now();
+  const createNewThread = async (
+    initialMessage: string,
+    initialAttachments?: File[],
+  ) => {
+    const now = Date.now();
     const newChat: Chat = {
-      id: generateUUID(),
-      title:
-        initialMessage.length > 50
-          ? `${initialMessage.slice(0, 50)}...`
-          : initialMessage,
-      messages: [], // Don't pre-populate - let useChat handle it and sync back
-      createdAt: CURRENT_TIME,
-      updatedAt: CURRENT_TIME,
+      id: chatId as ChatId,
+      title: generateChatTitle(initialMessage),
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
     };
 
     // Create new chat and set as active
     setChatState((prev) => {
+      const newChats = new Map(prev.chats);
+      newChats.set(newChat.id, newChat);
       const newState = {
         ...prev,
-        chats: [...prev.chats, newChat],
+        chats: newChats,
         activeChatId: newChat.id,
       };
       return newState;
     });
 
+    const fileParts =
+      initialAttachments && initialAttachments.length > 0
+        ? await convertToFileUIPart(initialAttachments)
+        : undefined;
+
     // Trigger AI conversation with append
-    const MESSAGE_ID = generateUUID();
-    append({
-      id: MESSAGE_ID,
+    sendMessage({
       role: "user",
-      content: initialMessage,
+      parts: [
+        {
+          type: "text" as const,
+          text: initialMessage,
+        },
+        ...(fileParts ?? []),
+      ],
     });
+    setFiles(undefined);
     setInput("");
   };
 
-  const handleNewChat = () => {
+  const handleNewChat = useEvent(() => {
     setActiveChat(null);
     setInput("");
     setNewThreadInput("");
-  };
+    setFiles(undefined);
+  });
 
-  const handleMessageEdit = (index: number, newValue: string) => {
-    // Truncate both useChat and storage
-    setMessages((messages) => messages.slice(0, index));
-    if (chatState.activeChatId) {
-      setChatState((prev) => ({
-        ...prev,
-        chats: prev.chats.map((chat) =>
-          chat.id === chatState.activeChatId
-            ? {
-                ...chat,
-                messages: chat.messages.slice(0, index),
-                updatedAt: Date.now(),
-              }
-            : chat,
-        ),
-      }));
-    }
+  const handleMessageEdit = useEvent((index: number, newValue: string) => {
+    const editedMessage = messages[index];
+    const fileParts = editedMessage.parts?.filter((p) => p.type === "file");
 
-    append({
+    const messageId = editedMessage.id;
+    sendMessage({
+      messageId: messageId, // replace the message
       role: "user",
-      content: newValue,
+      parts: [{ type: "text", text: newValue }, ...fileParts],
     });
-  };
+  });
 
-  const handleChatInputSubmit = (
-    e: KeyboardEvent | undefined,
-    newValue: string,
-  ): void => {
-    if (!newValue.trim()) {
-      return;
-    }
-    handleSubmit(e);
-  };
+  const handleChatInputSubmit = useEvent(
+    async (e: KeyboardEvent | undefined, newValue: string): Promise<void> => {
+      if (!newValue.trim()) {
+        return;
+      }
+      if (newMessageInputRef.current?.view) {
+        storePrompt(newMessageInputRef.current.view);
+      }
+      const fileParts = files ? await convertToFileUIPart(files) : undefined;
+
+      e?.preventDefault();
+      sendMessage({
+        text: newValue,
+        files: fileParts,
+      });
+      setInput("");
+      setFiles(undefined);
+    },
+  );
 
   const handleReload = () => {
-    reload();
+    regenerate();
   };
 
-  const handleNewThreadSubmit = () => {
-    newThreadInput.trim() && createNewThread(newThreadInput.trim());
-  };
+  const handleNewThreadSubmit = useEvent(() => {
+    if (!newThreadInput.trim()) {
+      return;
+    }
+    if (newThreadInputRef.current?.view) {
+      storePrompt(newThreadInputRef.current.view);
+    }
+    createNewThread(newThreadInput.trim(), files);
+  });
 
   const handleOnCloseThread = () => newThreadInputRef.current?.editor?.blur();
+
+  const isNewThread = messages.length === 0;
+  const chatInput = isNewThread ? (
+    <ChatInput
+      key="new-thread-input"
+      placeholder={`Ask anything, ${CONTEXT_TRIGGER} to include context about tables or dataframes`}
+      input={newThreadInput}
+      inputRef={newThreadInputRef}
+      inputClassName="px-1 py-0"
+      setInput={setNewThreadInput}
+      onSubmit={handleNewThreadSubmit}
+      isLoading={isLoading}
+      onStop={stop}
+      fileInputRef={fileInputRef}
+      onAddFiles={onAddFiles}
+      onClose={handleOnCloseThread}
+    />
+  ) : (
+    <ChatInput
+      input={input}
+      setInput={setInput}
+      onSubmit={handleChatInputSubmit}
+      inputRef={newMessageInputRef}
+      isLoading={isLoading}
+      onStop={stop}
+      onClose={() => newMessageInputRef.current?.editor?.blur()}
+      fileInputRef={fileInputRef}
+      onAddFiles={onAddFiles}
+    />
+  );
+
+  const filesPills = files && files.length > 0 && (
+    <div
+      className={cn(
+        "flex flex-row gap-1 flex-wrap p-1",
+        isNewThread && "py-2 px-1",
+      )}
+    >
+      {files?.map((file) => (
+        <FileAttachmentPill
+          file={file}
+          key={file.name}
+          onRemove={() => removeFile(file)}
+        />
+      ))}
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-[calc(100%-53px)]">
@@ -680,47 +808,28 @@ const ChatPanelBody = () => {
           onNewChat={handleNewChat}
           activeChatId={activeChat?.id}
           setActiveChat={setActiveChat}
-          chats={[...chatState.chats].sort((a, b) => b.updatedAt - a.updatedAt)}
         />
       </TooltipProvider>
 
       <div
-        className="flex-1 px-3 bg-[var(--slate-1)] gap-4 py-3 flex flex-col overflow-y-auto"
+        className="flex-1 px-3 bg-(--slate-1) gap-4 py-3 flex flex-col overflow-y-auto"
         ref={scrollContainerRef}
       >
-        {(!messages || messages.length === 0) && (
-          <div className="flex flex-col rounded-md border bg-background">
-            <div className="px-1">
-              <PromptInput
-                key="new-thread-input"
-                value={newThreadInput}
-                placeholder="Ask anything, @ to include context about tables or dataframes"
-                theme={theme}
-                onClose={handleOnCloseThread}
-                onChange={setNewThreadInput}
-                onSubmit={handleNewThreadSubmit}
-              />
-            </div>
-            <ChatInputFooter
-              input={newThreadInput}
-              onSendClick={handleNewThreadSubmit}
-              isLoading={isLoading}
-              onStop={stop}
-            />
+        {isNewThread && (
+          <div className="rounded-md border bg-background">
+            {filesPills}
+            {chatInput}
           </div>
         )}
 
         {messages.map((message, idx) => (
-          <ChatMessage
-            key={idx}
+          <ChatMessageDisplay
+            key={message.id}
             message={message}
             index={idx}
-            theme={theme}
             onEdit={handleMessageEdit}
-            setChatState={setChatState}
-            chatState={chatState}
             isStreamingReasoning={isStreamingReasoning}
-            totalMessages={messages.length}
+            isLast={idx === messages.length - 1}
           />
         ))}
 
@@ -750,17 +859,15 @@ const ChatPanelBody = () => {
         </div>
       )}
 
-      {messages && messages.length > 0 && (
-        <ChatInput
-          input={input}
-          setInput={setInput}
-          onSubmit={handleChatInputSubmit}
-          theme={theme}
-          inputRef={newMessageInputRef}
-          isLoading={isLoading}
-          onStop={stop}
-        />
+      {/* For existing threads, we place the chat input at the bottom */}
+      {!isNewThread && (
+        <>
+          {filesPills}
+          {chatInput}
+        </>
       )}
     </div>
   );
 };
+
+export default ChatPanel;

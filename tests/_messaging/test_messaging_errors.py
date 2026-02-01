@@ -1,9 +1,10 @@
 # Copyright 2024 Marimo. All rights reserved.
 from __future__ import annotations
 
+import msgspec
+
 from marimo._messaging.errors import (
     CycleError,
-    DeleteNonlocalError,
     ImportStarError,
     MarimoAncestorPreventedError,
     MarimoAncestorStoppedError,
@@ -29,7 +30,8 @@ class TestErrorClasses:
         error = CycleError(edges_with_vars=(edge1, edge2))
 
         # Test properties
-        assert error.type == "cycle"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "cycle"
         assert "cycle" in error.describe().lower()
         assert isinstance(error.describe(), str)
 
@@ -39,7 +41,8 @@ class TestErrorClasses:
         )
 
         # Test properties
-        assert error.type == "multiple-defs"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "multiple-defs"
         assert "test_var" in error.describe()
         assert "defined by another cell" in error.describe()
 
@@ -47,22 +50,27 @@ class TestErrorClasses:
         error = ImportStarError(msg="Cannot use import * in this context")
 
         # Test properties
-        assert error.type == "import-star"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "import-star"
         assert error.describe() == "Cannot use import * in this context"
 
-    def test_delete_nonlocal_error(self) -> None:
-        error = DeleteNonlocalError(name="test_var", cells=("cell1", "cell2"))
+    def test_import_star_error_with_lineno(self) -> None:
+        error = ImportStarError(
+            msg="Cannot use import * in this context", lineno=3
+        )
 
         # Test properties
-        assert error.type == "delete-nonlocal"
-        assert "test_var" in error.describe()
-        assert "can't be deleted" in error.describe()
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "import-star"
+        assert error.describe() == "Cannot use import * in this context"
+        assert error.lineno == 3
 
     def test_marimo_interruption_error(self) -> None:
         error = MarimoInterruptionError()
 
         # Test properties
-        assert error.type == "interruption"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "interruption"
         assert "interrupted" in error.describe().lower()
         assert "re-run" in error.describe().lower()
 
@@ -74,7 +82,8 @@ class TestErrorClasses:
         )
 
         # Test properties
-        assert error.type == "ancestor-prevented"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "ancestor-prevented"
         assert error.describe() == "Execution prevented by ancestor"
         assert error.raising_cell == "cell1"
         assert error.blamed_cell == "cell2"
@@ -86,7 +95,8 @@ class TestErrorClasses:
         )
 
         # Test properties
-        assert error.type == "ancestor-stopped"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "ancestor-stopped"
         assert error.describe() == "Execution stopped by ancestor"
         assert error.raising_cell == "cell1"
 
@@ -98,23 +108,56 @@ class TestErrorClasses:
         )
 
         # Test properties
-        assert error.type == "exception"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "exception"
         assert error.describe() == "ValueError: invalid value"
         assert error.raising_cell == "cell1"
         assert error.exception_type == "ValueError"
 
     def test_marimo_syntax_error(self) -> None:
+        error = MarimoSyntaxError(msg="Invalid syntax", lineno=5)
+
+        # Test properties
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "syntax"
+        assert error.describe() == "Invalid syntax"
+        assert error.lineno == 5
+
+    def test_marimo_syntax_error_without_lineno(self) -> None:
         error = MarimoSyntaxError(msg="Invalid syntax")
 
         # Test properties
-        assert error.type == "syntax"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "syntax"
         assert error.describe() == "Invalid syntax"
+        assert error.lineno is None
+
+    def test_marimo_syntax_error_with_line_zero(self) -> None:
+        # Edge case: line 0 should be treated as valid
+        error = MarimoSyntaxError(msg="Invalid syntax", lineno=0)
+
+        # Test properties
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "syntax"
+        assert error.describe() == "Invalid syntax"
+        assert error.lineno == 0
+
+    def test_marimo_syntax_error_with_large_lineno(self) -> None:
+        # Test with larger line numbers
+        error = MarimoSyntaxError(msg="Invalid syntax", lineno=100)
+
+        # Test properties
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "syntax"
+        assert error.describe() == "Invalid syntax"
+        assert error.lineno == 100
 
     def test_unknown_error(self) -> None:
         error = UnknownError(msg="Something went wrong")
 
         # Test properties
-        assert error.type == "unknown"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "unknown"
         assert error.describe() == "Something went wrong"
 
     def test_marimo_strict_execution_error(self) -> None:
@@ -125,7 +168,8 @@ class TestErrorClasses:
         )
 
         # Test properties
-        assert error.type == "strict-exception"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "strict-exception"
         assert error.describe() == "Strict execution error"
         assert error.ref == "some_reference"
         assert error.blamed_cell == "cell1"
@@ -137,7 +181,8 @@ class TestErrorClasses:
         )
 
         # Test properties
-        assert error.type == "internal"
+        serialized = msgspec.to_builtins(error)
+        assert serialized["type"] == "internal"
         assert "An internal error occurred" in error.describe()
         assert "test-error-id" in error.describe()
         # The original message should be replaced with a generic one

@@ -7,24 +7,28 @@
 
 import marimo
 
-__generated_with = "0.8.19"
+__generated_with = "0.17.4"
 app = marimo.App()
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md("""# Stacks""")
+def _(mo):
+    mo.md("""
+    # Stacks
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def __(mo):
-    mo.md("""Use `mo.hstack` and `mo.vstack` to layout outputs in rows and columns.""")
+def _(mo):
+    mo.md("""
+    Use `mo.hstack` and `mo.vstack` to layout outputs in rows and columns.
+    """)
     return
 
 
 @app.cell
-def __(mo):
+def _(mo):
     align = mo.ui.dropdown(
         label="Align", options=["start", "end", "center", "stretch"]
     )
@@ -49,13 +53,15 @@ def __(mo):
 
 
 @app.cell
-def __(mo):
-    mo.md("""## Horizontal Stack: `hstack`""")
+def _(mo):
+    mo.md("""
+    ## Horizontal Stack: `hstack`
+    """)
     return
 
 
 @app.cell
-def __(align, boxes, gap, justify, mo, wrap):
+def _(align, boxes, gap, justify, mo, wrap):
     mo.hstack(
         boxes,
         align=align.value,
@@ -67,13 +73,15 @@ def __(align, boxes, gap, justify, mo, wrap):
 
 
 @app.cell
-def __(mo):
-    mo.md("""## Vertical Stack: `vstack`""")
+def _(mo):
+    mo.md("""
+    ## Vertical Stack: `vstack`
+    """)
     return
 
 
 @app.cell
-def __(align, boxes, gap, mo):
+def _(align, boxes, gap, mo):
     mo.vstack(
         boxes,
         align=align.value,
@@ -83,7 +91,7 @@ def __(align, boxes, gap, mo):
 
 
 @app.cell
-def __(mo, size):
+def _(mo, size):
     def create_box(num):
         box_size = size.value + num * 10
         return mo.Html(
@@ -92,11 +100,11 @@ def __(mo, size):
 
 
     boxes = [create_box(i) for i in range(1, 5)]
-    return boxes, create_box
+    return (boxes,)
 
 
 @app.cell
-def __():
+def _():
     import marimo as mo
     return (mo,)
 

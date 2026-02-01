@@ -2,31 +2,32 @@
 from __future__ import annotations
 
 import ast
+import io
 import os
 import re
 import sys
 import textwrap
+import tokenize
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
-from marimo import __version__
+from marimo import _loggers
 from marimo._ast.app_config import _AppConfig
 from marimo._ast.cell import CellConfig, CellImpl
 from marimo._ast.compiler import compile_cell
 from marimo._ast.names import DEFAULT_CELL_NAME, SETUP_CELL_NAME
+from marimo._ast.parse import ast_parse
 from marimo._ast.toplevel import TopLevelExtraction, TopLevelStatus
 from marimo._ast.variables import BUILTINS
 from marimo._ast.visitor import Name, VariableData
 from marimo._convert.converters import MarimoConvert
 from marimo._schemas.serialization import NotebookSerializationV1
 from marimo._types.ids import CellId_t
+from marimo._version import __version__
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-if sys.version_info < (3, 10):
-    from typing_extensions import TypeAlias
-else:
-    from typing import TypeAlias
+from typing import TypeAlias
 
 Cls: TypeAlias = type
 
@@ -39,6 +40,8 @@ BRACES: dict[Literal["(", "["], tuple[str, str]] = {
 }
 
 Decorators = Literal["cell", "function", "class_definition"]
+
+LOGGER = _loggers.marimo_logger()
 
 
 def pop_setup_cell(
@@ -80,6 +83,7 @@ def format_tuple_elements(
     elems: tuple[str, ...],
     indent: bool = False,
     allowed_naked: bool = False,
+    trail_comma: bool = True,
     brace: Literal["(", "["] = "(",
 ) -> str:
     """
@@ -88,6 +92,7 @@ def format_tuple_elements(
     """
     left, right = BRACES[brace]
     maybe_indent = indent_text if indent else (lambda x: x)
+    suffix = "," if trail_comma else ""
     if not elems:
         if allowed_naked:
             return maybe_indent(code.replace("(...)", "").rstrip())
@@ -95,7 +100,7 @@ def format_tuple_elements(
 
     if allowed_naked and len(elems) == 1:
         allowed_naked = False
-        elems = (f"{elems[0]},",)
+        elems = (f"{elems[0]}{suffix}",)
 
     tuple_str = ", ".join(elems)
     if allowed_naked:
@@ -112,7 +117,7 @@ def format_tuple_elements(
         elems = (elems[0].strip(","),)
 
     multiline_tuple = "\n".join(
-        [left, indent_text(",\n".join(elems)) + ",", right]
+        [left, indent_text(",\n".join(elems)) + suffix, right]
     )
     return maybe_indent(code.replace("(...)", multiline_tuple))
 
@@ -121,25 +126,75 @@ def to_decorator(
     config: Optional[CellConfig],
     fn: Decorators = "cell",
 ) -> str:
-    if config is None:
+    if config is None or not config.is_different_from_default():
         return f"@app.{fn}"
 
-    # Removed defaults. If the cell's config is the default config,
-    # don't include it in the decorator.
-    if not config.disabled:
-        del config.disabled
-    if not config.hide_code:
-        del config.hide_code
-    if not isinstance(config.column, int):
-        del config.column
+    # Only include non-defaults in the decorator call
+    return format_tuple_elements(
+        f"@app.{fn}(...)",
+        tuple(
+            f"{key}={value}"
+            for key, value in config.asdict_without_defaults().items()
+        ),
+    )
 
-    if config == CellConfig():
-        return f"@app.{fn}"
-    else:
-        return format_tuple_elements(
-            f"@app.{fn}(...)",
-            tuple(f"{key}={value}" for key, value in config.__dict__.items()),
-        )
+
+def format_markdown(cell: CellImpl) -> str:
+    markdown = cell.markdown or ""
+    # AST does not preserve string quote types or types, so directly use
+    # tokenize.
+    tokens = tokenize.tokenize(io.BytesIO(cell.code.encode("utf-8")).readline)
+    tag = ""
+    # Comment capture
+    comments = {
+        "prefix": "",
+        "suffix": "",
+    }
+    key: Optional[str] = "prefix"
+    tokenizes_fstring = sys.version_info >= (3, 12)
+    start_tokens = (
+        (tokenize.STRING, tokenize.FSTRING_START)
+        if tokenizes_fstring
+        else (tokenize.STRING,)
+    )
+    fstring = False
+    for tok in tokens:
+        # if string
+        if tok.type in start_tokens:
+            tag = ""
+            # rf"""/ f"/ r"/ "more
+            start = tok.string[:5]
+            for _ in range(2):
+                if start[0].lower() in "rtf":
+                    tag += start[0]
+                    start = start[1:]
+            fstring = "f" in tag.lower()
+        elif tok.string == "mo":
+            key = None
+        elif tok.string == ")":
+            key = "suffix"
+        elif key in comments and tok.type != tokenize.ENCODING:
+            comments[key] += tok.string
+
+    if fstring:
+        # We can blanket replace, because cell.markdown is not set
+        # on f-strings with values.
+        markdown = markdown.replace("{", "{{").replace("}", "}}")
+    markdown = markdown.replace('""', '"\\"')
+
+    # We always use """ as per front end.
+    body = construct_markdown_call(markdown, '"""', tag)
+    return "".join([comments["prefix"], body, comments["suffix"]])
+
+
+def construct_markdown_call(markdown: str, quote: str, tag: str) -> str:
+    return "\n".join(
+        [
+            f"mo.md({tag}{quote}",
+            markdown,
+            f"{quote})",
+        ]
+    )
 
 
 def build_setup_section(setup_cell: Optional[CellImpl]) -> str:
@@ -158,9 +213,14 @@ def build_setup_section(setup_cell: Optional[CellImpl]) -> str:
     if has_only_comments:
         block += "\npass"
 
+    if setup_cell.config.hide_code:
+        setup_line = f"{prefix}with app.setup(hide_code=True):"
+    else:
+        setup_line = f"{prefix}with app.setup:"
+
     return "\n".join(
         [
-            f"{prefix}with app.setup:",
+            setup_line,
             indent_text(block),
             "\n",
         ]
@@ -183,7 +243,9 @@ def to_annotated_string(
             annotation = variable.annotation_data
             if annotation:
                 if annotation.refs - allowed_refs:
-                    response[name] = f'"{annotation.repr}"'
+                    # replace unescaped quotes with escaped quotes
+                    safe_repr = re.sub(r'(?<!\\)"', r'\\"', annotation.repr)
+                    response[name] = f'"{safe_repr}"'
                 else:
                     response[name] = annotation.repr
     return response
@@ -205,7 +267,18 @@ def to_functiondef(
     # already in globals)
     if allowed_refs is None:
         allowed_refs = BUILTINS
-    refs = tuple(ref for ref in sorted(cell.refs) if ref not in allowed_refs)
+
+    refs: tuple[str, ...] = tuple()
+    sorted_refs = sorted(cell.refs)
+    for ref in sorted_refs:
+        if ref not in allowed_refs:
+            if not ref.isidentifier():
+                # Filter out refs that are not valid Python identifiers
+                # If not, function signatures will have invalid parameters
+                # eg. `def _(mo, my_schema.my_table):`
+                LOGGER.debug(f"Found non-identifier ref: {ref}")
+                continue
+            refs += (ref,)
 
     # Check to see if any of the refs have an explicit type assigned to them.
     annotation_lookups = to_annotated_string(
@@ -224,22 +297,34 @@ def to_functiondef(
     # other static analysis tools can capture unused variables across cells.
     defs: tuple[str, ...] = tuple()
     if cell.defs:
+        # SQL defs should not be included in the return value.
+        sql_defs = (
+            {
+                name
+                for name, value in variable_data.items()
+                if value.language == "sql"
+            }
+            if variable_data
+            else set()
+        )
         # There are possible name error cases where a cell defines, and also
         # requires a variable. We remove defs from the signature such that
         # this causes a lint error in pyright.
-        if used_refs is None:
-            defs = tuple(name for name in sorted(cell.defs))
-        else:
-            defs = tuple(
-                name for name in sorted(cell.defs) if name in used_refs
-            )
+        defs = tuple(
+            name for name in sorted(cell.defs) if name not in sql_defs
+        )
+        if used_refs is not None:
+            defs = tuple(name for name in defs if name in used_refs)
 
     decorator = to_decorator(cell.config, fn=fn)
     prefix = "" if not cell.is_coroutine() else "async "
     signature = format_tuple_elements(f"{prefix}def {name}(...):", refs)
 
     definition_body = [decorator, signature]
-    if body := indent_text(cell.code):
+    # Handle markdown cells with formatting
+    if cell.markdown:
+        definition_body.append(indent_text(format_markdown(cell)))
+    elif body := indent_text(cell.code):
         definition_body.append(body)
 
     returns = format_tuple_elements(
@@ -288,7 +373,7 @@ def generate_unparsable_cell(
 
     flags = {}
     if config != CellConfig():
-        flags = dict(config.__dict__)
+        flags = config.asdict()
 
     if name is not None:
         flags["name"] = name
@@ -333,6 +418,25 @@ def serialize_cell(
         raise ValueError("Unknown cell status, please report this issue.")
 
 
+def safe_serialize_cell(
+    extraction: TopLevelExtraction, status: TopLevelStatus
+) -> str:
+    """Additional defensive layer- we should _never_ generate invalid code."""
+    code = serialize_cell(extraction, status)
+    try:
+        ast_parse(code)
+    except SyntaxError as e:
+        LOGGER.warning(
+            f"Generated code for cell {status.name} is invalid, "
+            "falling back to unparsable cell. Please report this error. "
+            f"Error: {e}"
+        )
+        return generate_unparsable_cell(
+            code=status.code, config=status.cell_config, name=status.name
+        )
+    return code
+
+
 def generate_app_constructor(config: Optional[_AppConfig]) -> str:
     updates = {}
     # only include a config setting if it's not a default setting, to
@@ -375,7 +479,9 @@ def generate_filecontents(
     if setup_cell:
         toplevel_defs = set(setup_cell.defs)
     extraction = TopLevelExtraction(codes, names, cell_configs, toplevel_defs)
-    cell_blocks = [serialize_cell(extraction, status) for status in extraction]
+    cell_blocks = [
+        safe_serialize_cell(extraction, status) for status in extraction
+    ]
 
     filecontents = []
     if header_comments is not None:
@@ -439,7 +545,7 @@ def get_header_comments(filename: str | Path) -> Optional[str]:
     # Ensure the header only contains non-executable code
     # ast parses out single line comments, so we only
     # need to check that every node is not a multiline comment
-    module = ast.parse(header)
+    module = ast_parse(header)
     if any(not is_multiline_comment(node) for node in module.body):
         return None
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest
+from inline_snapshot import snapshot
+
 from marimo._output.md import _md, latex
 
 if TYPE_CHECKING:
@@ -12,7 +15,7 @@ if TYPE_CHECKING:
 def test_md() -> None:
     # Test basic markdown conversion
     input_text = "This is **bold** and this is _italic_."
-    expected_output = '<span class="markdown prose dark:prose-invert"><span class="paragraph">This is <strong>bold</strong> and this is <em>italic</em>.</span></span>'  # noqa: E501
+    expected_output = '<span class="markdown prose dark:prose-invert contents"><span class="paragraph">This is <strong>bold</strong> and this is <em>italic</em>.</span></span>'  # noqa: E501
     assert _md(input_text).text == expected_output
 
     # Test disabling markdown class
@@ -25,7 +28,7 @@ def test_md() -> None:
 
 # def test_md_size() -> None:
 #     input_text = "This is **bold** and this is _italic_."
-#     expected_output = '<span class="markdown prose dark:prose-invert prose-lg"><span class="paragraph">This is <strong>bold</strong> and this is <em>italic</em>.</span></span>'  # noqa: E501
+#     expected_output = '<span class="markdown prose dark:prose-invert contents prose-lg"><span class="paragraph">This is <strong>bold</strong> and this is <em>italic</em>.</span></span>'  # noqa: E501
 #     assert _md(input_text, size="lg").text == expected_output
 
 
@@ -81,7 +84,7 @@ def test_md_footnotes() -> None:
     footnote_input = (
         "Here is a footnote reference[^1].\n\n[^1]: Here is the footnote."
     )
-    expected_output = '<span class="paragraph">Here is a footnote reference<sup id="fnref:2-1"><a class="footnote-ref" href="#fn:2-1">1</a></sup>.</span>\n<div class="footnote">\n<hr />\n<ol>\n<li id="fn:2-1">\n<span class="paragraph">Here is the footnote.&#160;<a class="footnote-backref" href="#fnref:2-1" title="Jump back to footnote 1 in the text">&#8617;</a></span>\n</li>\n</ol>\n</div>'  # noqa: E501
+    expected_output = '<span class="paragraph">Here is a footnote reference<sup id="fnref:2-1"><a class="footnote-ref" href="#fn:2-1">1</a></sup>.</span>\n<div class="footnote">\n<hr />\n<ol>\n<li id="fn:2-1">Here is the footnote.&#160;<a class="footnote-backref" href="#fnref:2-1" title="Jump back to footnote 1 in the text">&#8617;</a></li>\n</ol>\n</div>'  # noqa: E501
     assert _md(footnote_input, apply_markdown_class=False).text == (
         expected_output
     )
@@ -113,6 +116,185 @@ def test_md_sane_lists() -> None:
     input_text = "2. hey\n3. hey"
     expected_output = '<ol start="2">\n<li>hey</li>\n<li>hey</li>\n</ol>'
     assert _md(input_text, apply_markdown_class=False).text == expected_output
+
+
+def test_md_breakless_lists() -> None:
+    # Test that breakless lists removes <p> tags from within <li> elements
+    # for more compact list formatting
+    input_text = """- Item 1
+
+- Item 2
+
+- Item 3"""
+
+    result = _md(input_text, apply_markdown_class=False).text
+
+    assert result == snapshot(
+        """\
+<ul>
+<li>Item 1</li>
+<li>Item 2</li>
+<li>Item 3</li>
+</ul>\
+"""
+    )
+
+    # Ensure no <p> tags are present in list items
+    assert "<li><p>" not in result
+    assert "</p></li>" not in result
+
+
+@pytest.mark.parametrize("spaces", [2, 4])
+def test_md_flexible_indent_spaces(spaces: int) -> None:
+    indent = " " * spaces
+    input_text = f"""- Item 1
+{indent}- Nested item
+{indent}{indent}- Deep nested
+- Item 2"""
+
+    result = _md(input_text, apply_markdown_class=False).text
+
+    # Should create properly nested lists with 2-space or 4-space indentation
+    assert result == snapshot(
+        """\
+<ul>
+<li>
+<span class="paragraph">Item 1</span>
+<ul>
+<li>
+<span class="paragraph">Nested item</span>
+<ul>
+<li>Deep nested</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Item 2</li>
+</ul>\
+"""
+    )
+
+
+def test_md_flexible_indent_mixed_normalization() -> None:
+    # Test that inconsistent indentation gets normalized
+    input_text = """- Item 1
+   - Nested item (3 spaces, should normalize to 2 or 4)
+      - Deep nested (6 spaces)
+- Item 2"""
+
+    result = _md(input_text, apply_markdown_class=False).text
+
+    # Should normalize inconsistent spacing and still create valid lists
+    assert result == snapshot(
+        """\
+<ul>
+<li>
+<span class="paragraph">Item 1</span>
+<ul>
+<li>
+<span class="paragraph">Nested item (3 spaces, should normalize to 2 or 4)</span>
+<ul>
+<li>Deep nested (6 spaces)</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>Item 2</li>
+</ul>\
+"""
+    )
+
+
+@pytest.mark.parametrize("spaces", [2, 4])
+def test_md_flexible_indent_ordered_lists(spaces: int) -> None:
+    indent = " " * spaces
+    input_text = f"""1. Item 1
+{indent}1. Nested ordered item
+{indent}{indent}1. Deep nested ordered
+2. Item 2"""
+
+    result = _md(input_text, apply_markdown_class=False).text
+
+    # Should create properly nested ordered lists
+    assert result == snapshot(
+        """\
+<ol>
+<li>
+<span class="paragraph">Item 1</span>
+<ol>
+<li>
+<span class="paragraph">Nested ordered item</span>
+<ol>
+<li>Deep nested ordered</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>Item 2</li>
+</ol>\
+"""
+    )
+
+
+def test_md_breakless_lists_with_paragraphs() -> None:
+    # Test CommonMark-style list interruption
+    input_text_no_blank = """This is GitHub-flavored markdown:
+- Item 1
+- Item 2
+- Item 3"""
+    result = _md(input_text_no_blank, apply_markdown_class=False).text
+    assert result == snapshot(
+        """\
+<span class="paragraph">This is GitHub-flavored markdown:</span>
+<ul>
+<li>Item 1</li>
+<li>Item 2</li>
+<li>Item 3</li>
+</ul>\
+"""
+    )
+
+    # Test 2: With blank line (should work the same)
+    input_text_with_blank = """This is GitHub-flavored markdown:
+
+- Item 1
+- Item 2
+- Item 3"""
+    next_result = _md(input_text_with_blank, apply_markdown_class=False).text
+    # Same as previous result
+    assert result == next_result
+
+
+def test_md_commonmark_examples() -> None:
+    # Test the exact CommonMark spec example (Example 283)
+    commonmark_input = """Foo
+- bar
+- baz"""
+    result = _md(commonmark_input, apply_markdown_class=False).text
+    assert result == snapshot(
+        """\
+<span class="paragraph">Foo</span>
+<ul>
+<li>bar</li>
+<li>baz</li>
+</ul>\
+"""
+    )
+
+    # Test with ordered lists too
+    ordered_input = """Text here
+1. First item
+2. Second item"""
+    result = _md(ordered_input, apply_markdown_class=False).text
+    assert result == snapshot(
+        """\
+<span class="paragraph">Text here</span>
+<ol>
+<li>First item</li>
+<li>Second item</li>
+</ol>\
+"""
+    )
 
 
 def test_md_pycon_detection() -> None:
@@ -257,6 +439,84 @@ def test_md_repr_markdown():
     assert md._repr_markdown_() == input_text
 
 
+def test_md_format():
+    input_text = "This is **bold** and this is _italic_."
+    md = _md(input_text)
+    assert f"{md}" == input_text
+
+    input_text = "```python\nprint('Hello, world!')\n```"
+    md = _md(input_text)
+    assert f"{md}" == input_text
+
+
+def test_md_mime_type():
+    # Test that _md returns text/markdown mime type for proper sanitization
+    input_text = "This is **bold** and this is _italic_."
+    md = _md(input_text)
+    mime_type, content = md._mime_()
+    # Has markdown mime type so the frontend knows to sanitize it
+    assert mime_type == "text/markdown"
+    # Content should be the rendered HTML
+    assert "<strong>bold</strong>" in content
+    assert "<em>italic</em>" in content
+
+
+def test_md_mime_type_with_script():
+    # Test that _md returns text/markdown even with potentially dangerous content
+    # The frontend will sanitize it
+    input_text = "# Title\n\nSome text"
+    md = _md(input_text)
+    # Has markdown mime type so the frontend knows to sanitize it
+    mime_type, content = md._mime_()
+    assert mime_type == "text/markdown"
+    assert "Title" in content
+
+
+def test_md_caret_superscript() -> None:
+    # Test superscript conversion
+    superscript_input = "H^2^O"
+    expected_output = '<span class="paragraph">H<sup>2</sup>O</span>'
+    assert (
+        _md(superscript_input, apply_markdown_class=False).text
+        == expected_output
+    )
+
+    # Test superscript with spaces
+    superscript_spaces = "text^a\\ superscript^"
+    expected_spaces = (
+        '<span class="paragraph">text<sup>a superscript</sup></span>'
+    )
+    assert (
+        _md(superscript_spaces, apply_markdown_class=False).text
+        == expected_spaces
+    )
+
+
+def test_md_caret_insert() -> None:
+    # Test insert (underline) conversion
+    insert_input = "^^Insert me^^"
+    expected_output = '<span class="paragraph"><ins>Insert me</ins></span>'
+    assert (
+        _md(insert_input, apply_markdown_class=False).text == expected_output
+    )
+
+    # Test insert with markdown formatting
+    insert_bold = "This is ^^important^^ text"
+    expected_bold = (
+        '<span class="paragraph">This is <ins>important</ins> text</span>'
+    )
+    assert _md(insert_bold, apply_markdown_class=False).text == expected_bold
+
+
+def test_md_caret_combined() -> None:
+    # Test caret combined with tilde (subscript/strikethrough)
+    combined_input = "CH~3~CH~2~OH with H^2^O"
+    expected_output = '<span class="paragraph">CH<sub>3</sub>CH<sub>2</sub>OH with H<sup>2</sup>O</span>'
+    assert (
+        _md(combined_input, apply_markdown_class=False).text == expected_output
+    )
+
+
 @patch("marimo._runtime.output")
 def test_latex_via_path(output: MagicMock, tmp_path: Path) -> None:
     filename = tmp_path / "macros.tex"
@@ -264,7 +524,7 @@ def test_latex_via_path(output: MagicMock, tmp_path: Path) -> None:
     latex(filename=filename)
     assert (
         output.append.call_args[0][0].text
-        == '<span class="markdown prose dark:prose-invert"><marimo-tex class="arithmatex">||[\n\\newcommand{\\\x0coo}{bar}\n||]</marimo-tex></span>'
+        == '<span class="markdown prose dark:prose-invert contents"><marimo-tex class="arithmatex">||[\n\\newcommand{\\\x0coo}{bar}\n||]</marimo-tex></span>'
     )
 
 
@@ -278,5 +538,5 @@ def test_latex_via_url(mock_urlopen: MagicMock, output: MagicMock) -> None:
     latex(filename="https://example.com/macros.tex")
     assert (
         output.append.call_args[0][0].text
-        == '<span class="markdown prose dark:prose-invert"><marimo-tex class="arithmatex">||[\n\\newcommand{\\\foo}{bar}\n||]</marimo-tex></span>'
+        == '<span class="markdown prose dark:prose-invert contents"><marimo-tex class="arithmatex">||[\n\\newcommand{\\\foo}{bar}\n||]</marimo-tex></span>'
     )

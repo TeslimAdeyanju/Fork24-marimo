@@ -18,6 +18,7 @@ __all__ = [
     # Core API
     "App",
     "Cell",
+    "AppMeta",
     "create_asgi_app",
     "MarimoIslandGenerator",
     "MarimoStopError",
@@ -48,6 +49,7 @@ __all__ = [
     "iframe",
     "image",
     "image_compare",
+    "inspect",
     "json",
     "latex",
     "lazy",
@@ -59,6 +61,7 @@ __all__ = [
     "nav_menu",
     "notebook_dir",
     "notebook_location",
+    "outline",
     "output",
     "pdf",
     "persistent_cache",
@@ -84,9 +87,8 @@ __all__ = [
     "video",
     "vstack",
     "watch",
+    "__version__",
 ]
-__version__ = "0.14.13"
-
 import marimo._ai as ai
 import marimo._islands as islands
 import marimo._runtime.watch as watch
@@ -98,6 +100,7 @@ from marimo._output.formatting import as_html, iframe, plain
 from marimo._output.hypertext import Html
 from marimo._output.justify import center, left, right
 from marimo._output.md import latex, md
+from marimo._output.outline import outline
 from marimo._output.show_code import show_code
 from marimo._plugins import ui
 from marimo._plugins.stateless import mpl, status
@@ -110,6 +113,7 @@ from marimo._plugins.stateless.flex import hstack, vstack
 from marimo._plugins.stateless.icon import icon
 from marimo._plugins.stateless.image import image
 from marimo._plugins.stateless.image_compare import image_compare
+from marimo._plugins.stateless.inspect import inspect
 from marimo._plugins.stateless.json_component import json
 from marimo._plugins.stateless.lazy import lazy
 from marimo._plugins.stateless.mermaid import mermaid
@@ -124,6 +128,7 @@ from marimo._plugins.stateless.tabs import tabs
 from marimo._plugins.stateless.tree import tree
 from marimo._plugins.stateless.video import video
 from marimo._runtime import output
+from marimo._runtime.app_meta import AppMeta
 from marimo._runtime.capture import (
     capture_stderr,
     capture_stdout,
@@ -146,3 +151,4 @@ from marimo._runtime.threads import Thread, current_thread
 from marimo._save.save import cache, lru_cache, persistent_cache
 from marimo._server.asgi import create_asgi_app
 from marimo._sql.sql import sql
+from marimo._version import __version__

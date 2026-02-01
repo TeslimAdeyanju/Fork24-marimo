@@ -5,8 +5,8 @@ import json
 import os
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterator
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -17,6 +17,7 @@ from typing import (
     Union,
     cast,
 )
+from urllib.parse import parse_qs, urlparse
 
 from starlette.exceptions import HTTPException
 
@@ -31,25 +32,26 @@ from marimo._ai._convert import (
     convert_to_openai_tools,
 )
 from marimo._ai._types import ChatMessage
-from marimo._config.config import (
-    AiConfig,
-    CompletionConfig,
-    CopilotMode,
-    MarimoConfig,
-)
 from marimo._dependencies.dependencies import DependencyManager
+from marimo._server.ai.config import AnyProviderConfig
+from marimo._server.ai.ids import AiModelId
+from marimo._server.ai.tools.types import ToolDefinition
 from marimo._server.api.status import HTTPStatus
+
+TIMEOUT = 30
+# Long-thinking models can take a long time to complete, so we set a longer timeout
+LONG_THINKING_TIMEOUT = 120
 
 if TYPE_CHECKING:
     from anthropic import (  # type: ignore[import-not-found]
-        Client,
-        Stream as AnthropicStream,
+        AsyncClient,
+        AsyncStream as AnthropicStream,
     )
     from anthropic.types import (  # type: ignore[import-not-found]
         RawMessageStreamEvent,
     )
     from google.genai.client import (  # type: ignore[import-not-found]
-        Client as GoogleClient,
+        AsyncClient as GoogleClient,
     )
     from google.genai.types import (  # type: ignore[import-not-found]
         GenerateContentConfig,
@@ -64,26 +66,31 @@ if TYPE_CHECKING:
         ModelResponseStream as LitellmStreamResponse,
     )
     from openai import (  # type: ignore[import-not-found]
-        OpenAI,
-        Stream as OpenAiStream,
+        AsyncOpenAI,
+        AsyncStream as OpenAiStream,
     )
     from openai.types.chat import (  # type: ignore[import-not-found]
         ChatCompletionChunk,
     )
 
-from marimo._server.ai.tools import Tool, get_tool_manager
 
 ResponseT = TypeVar("ResponseT")
-StreamT = TypeVar("StreamT")
+StreamT = TypeVar("StreamT", bound=AsyncIterator[Any])
 FinishReason = Literal["tool_calls", "stop"]
 
 # Types for extract_content method return
 DictContent = tuple[
     dict[str, Any],
-    Literal["tool_call_start", "tool_call_end", "reasoning_signature"],
+    Literal[
+        "tool_call_start",
+        "tool_call_end",
+        "reasoning_signature",
+        "tool_call_delta",
+    ],
 ]
-TextContent = tuple[str, Literal["text", "reasoning", "tool_call_delta"]]
+TextContent = tuple[str, Literal["text", "reasoning"]]
 ExtractedContent = Union[TextContent, DictContent]
+ExtractedContentList = list[ExtractedContent]
 
 # Types for format_stream method parameter
 FinishContent = tuple[FinishReason, Literal["finish_reason"]]
@@ -102,9 +109,6 @@ StreamContent = Union[StreamTextContent, StreamDictContent, FinishContent]
 
 LOGGER = _loggers.marimo_logger()
 
-DEFAULT_MAX_TOKENS = 4096
-DEFAULT_MODEL = "gpt-4o-mini"
-
 
 @dataclass
 class StreamOptions:
@@ -113,144 +117,10 @@ class StreamOptions:
 
 
 @dataclass
-class AnyProviderConfig:
-    base_url: Optional[str]
-    api_key: str
-    ssl_verify: Optional[bool] = None
-    ca_bundle_path: Optional[str] = None
-    client_pem: Optional[str] = None
-    tools: list[Tool] = field(default_factory=list)
-
-    @staticmethod
-    def for_openai(config: AiConfig) -> AnyProviderConfig:
-        if "open_ai" not in config:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST,
-                detail="OpenAI config not found",
-            )
-        key = _get_key(config["open_ai"], "OpenAI")
-
-        kwargs: dict[str, Any] = {
-            "base_url": _get_base_url(config["open_ai"]),
-            "api_key": key,
-            "ssl_verify": config["open_ai"].get("ssl_verify", True),
-            "ca_bundle_path": config["open_ai"].get("ca_bundle_path", None),
-            "client_pem": config["open_ai"].get("client_pem", None),
-        }
-
-        # Only include tools if they are available
-        # Empty tools list causes an error with deepseek
-        # https://discord.com/channels/1059888774789730424/1387766267792068821
-        tools = _get_tools(config.get("mode", "manual"))
-        if len(tools) > 0:
-            kwargs["tools"] = tools
-
-        return AnyProviderConfig(**kwargs)
-
-    @staticmethod
-    def for_anthropic(config: AiConfig) -> AnyProviderConfig:
-        if "anthropic" not in config:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST,
-                detail="Anthropic config not found",
-            )
-        key = _get_key(config["anthropic"], "Anthropic")
-        return AnyProviderConfig(
-            base_url=_get_base_url(config["anthropic"]),
-            api_key=key,
-            tools=_get_tools(config.get("mode", "manual")),
-        )
-
-    @staticmethod
-    def for_google(config: AiConfig) -> AnyProviderConfig:
-        if "google" not in config:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST,
-                detail="Google config not found",
-            )
-        key = _get_key(config["google"], "Google AI")
-        return AnyProviderConfig(
-            base_url=_get_base_url(config["google"]),
-            api_key=key,
-            tools=_get_tools(config.get("mode", "manual")),
-        )
-
-    @staticmethod
-    def for_bedrock(config: AiConfig) -> AnyProviderConfig:
-        if "bedrock" not in config:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST,
-                detail="Bedrock config not found",
-            )
-        key = _get_key(config["bedrock"], "Bedrock")
-        return AnyProviderConfig(
-            base_url=_get_base_url(config["bedrock"], "Bedrock"),
-            api_key=key,
-            tools=_get_tools(config.get("mode", "manual")),
-        )
-
-    @staticmethod
-    def for_completion(config: CompletionConfig) -> AnyProviderConfig:
-        key = _get_key(config, "AI completion")
-        return AnyProviderConfig(
-            base_url=_get_base_url(config),
-            api_key=key,
-            tools=[],  # Inline completion never uses tools
-        )
-
-    @staticmethod
-    def for_model(model: str, config: AiConfig) -> AnyProviderConfig:
-        if _model_is_anthropic(model):
-            return AnyProviderConfig.for_anthropic(config)
-        elif _model_is_google(model):
-            return AnyProviderConfig.for_google(config)
-        elif _model_is_bedrock(model):
-            return AnyProviderConfig.for_bedrock(config)
-        else:
-            # OpenAI has a default API that ollama also uses, that is
-            # why it is a catch all at the end here.
-            return AnyProviderConfig.for_openai(config)
-
-
-def _get_key(config: Any, name: str) -> str:
-    if name == "Bedrock":
-        if "profile_name" in config:
-            profile_name = config.get("profile_name", "")
-            return f"profile:{profile_name}"
-        elif (
-            "aws_access_key_id" in config and "aws_secret_access_key" in config
-        ):
-            return f"{config['aws_access_key_id']}:{config['aws_secret_access_key']}"
-        else:
-            return ""
-    if "api_key" in config:
-        key = config["api_key"]
-        if key:
-            return cast(str, key)
-    if "http://127.0.0.1:11434/" in config.get("base_url", ""):
-        # Ollama can be configured and in that case the api key is not needed.
-        # We send a placeholder value to prevent the user from being confused.
-        return "ollama-placeholder"
-    raise HTTPException(
-        status_code=HTTPStatus.BAD_REQUEST,
-        detail=f"{name} API key not configured",
-    )
-
-
-def _get_base_url(config: Any, name: str = "") -> Optional[str]:
-    if name == "Bedrock":
-        if "region_name" in config:
-            return cast(str, config["region_name"])
-        else:
-            return None
-    elif "base_url" in config:
-        return cast(str, config["base_url"])
-    return None
-
-
-def _get_tools(mode: CopilotMode) -> list[Tool]:
-    tool_manager = get_tool_manager()
-    return tool_manager.get_tools_for_mode(mode)
+class ActiveToolCall:
+    tool_call_id: str
+    tool_call_name: str
+    tool_call_args: str
 
 
 class CompletionProvider(Generic[ResponseT, StreamT], ABC):
@@ -261,19 +131,20 @@ class CompletionProvider(Generic[ResponseT, StreamT], ABC):
         self.config = config
 
     @abstractmethod
-    def stream_completion(
+    async def stream_completion(
         self,
         messages: list[ChatMessage],
         system_prompt: str,
         max_tokens: int,
+        additional_tools: list[ToolDefinition],
     ) -> StreamT:
         """Create a completion stream."""
         pass
 
     @abstractmethod
     def extract_content(
-        self, response: ResponseT, tool_call_id: Optional[str] = None
-    ) -> Optional[ExtractedContent]:
+        self, response: ResponseT, tool_call_ids: Optional[list[str]] = None
+    ) -> Optional[ExtractedContentList]:
         """Extract content from a response chunk."""
         pass
 
@@ -287,7 +158,11 @@ class CompletionProvider(Generic[ResponseT, StreamT], ABC):
         content_text, content_type = content
         if content_type in [
             "text",
+            "text_start",
+            "text_end",
             "reasoning",
+            "reasoning_start",
+            "reasoning_end",
             "reasoning_signature",
             "tool_call_start",
             "tool_call_delta",
@@ -297,9 +172,14 @@ class CompletionProvider(Generic[ResponseT, StreamT], ABC):
             return convert_to_ai_sdk_messages(content_text, content_type)
         return ""
 
-    def collect_stream(self, response: StreamT) -> str:
+    async def collect_stream(self, response: StreamT) -> str:
         """Collect a stream into a single string."""
-        return "".join(self.as_stream_response(response))
+        result: list[str] = []
+        async for chunk in self.as_stream_response(
+            response, StreamOptions(text_only=True)
+        ):
+            result.append(chunk)
+        return "".join(result)
 
     def _content_to_string(
         self, content_data: Union[str, dict[str, Any]]
@@ -359,96 +239,185 @@ class CompletionProvider(Generic[ResponseT, StreamT], ABC):
                 detail=f"Invalid tool call arguments: malformed JSON: {tool_call_args}",
             ) from e
 
-    def as_stream_response(
+    async def as_stream_response(
         self, response: StreamT, options: Optional[StreamOptions] = None
-    ) -> Generator[str, None, None]:
-        """Convert a stream to a generator of strings."""
+    ) -> AsyncGenerator[str, None]:
+        """Convert a stream to an async generator of strings."""
         original_content = ""
         buffer = ""
         options = options or StreamOptions()
 
         # Tool info collected from the first chunk
-        tool_call_id: Optional[str] = None
-        tool_call_name: Optional[str] = None
-        # Tool args collected from the tool_call_delta chunks
-        tool_call_args: str = ""
+        tool_calls: dict[str, ActiveToolCall] = {}
+        tool_calls_order: list[str] = []
+
         # Finish reason collected from the last chunk
         finish_reason: Optional[FinishReason] = None
 
-        for chunk in cast(Generator[ResponseT, None, None], response):
+        # Text block tracking for start/delta/end pattern
+        current_text_id: Optional[str] = None
+        current_reasoning_id: Optional[str] = None
+        has_text_started = False
+        has_reasoning_started = False
+
+        async for chunk in response:
             # Always check for finish reason first, before checking content
             # Some chunks (like RawMessageDeltaEvent) contain finish reasons but no extractable content
             # If we check content first, these chunks get skipped and finish reason is never detected
             finish_reason = self.get_finish_reason(chunk) or finish_reason
 
-            content = self.extract_content(chunk, tool_call_id)
+            content = self.extract_content(chunk, tool_calls_order)
             if not content:
                 continue
 
-            content_data, content_type = content
+            # Loop through all content chunks
+            for content_data, content_type in content:
+                if options.text_only and content_type != "text":
+                    continue
 
-            if options.text_only and content_type != "text":
-                continue
+                # Handle text content with start/delta/end pattern
+                if (
+                    content_type == "text"
+                    and isinstance(content_data, str)
+                    and options.format_stream
+                ):
+                    if not has_text_started:
+                        # Emit text-start event
+                        current_text_id = f"text_{uuid.uuid4().hex}"
+                        yield convert_to_ai_sdk_messages(
+                            "", "text_start", current_text_id
+                        )
+                        has_text_started = True
 
-            # Tool handling
-            if content_type == "tool_call_start" and isinstance(
-                content_data, dict
-            ):
-                tool_call_id = content_data.get("toolCallId", None)
-                tool_call_name = content_data.get("toolName", None)
-                # Sometimes GoogleProvider emits the args in the tool_call_start chunk
-                if content_data.get("args"):
-                    # don't yield args in tool_call_start chunk
-                    # it will throw an error in ai-sdk-ui
-                    tool_call_args = content_data.pop("args")
+                    # Emit text-delta event with the actual content
+                    yield convert_to_ai_sdk_messages(
+                        content_data, "text", current_text_id
+                    )
+                    continue
 
-            if content_type == "tool_call_delta" and isinstance(
-                content_data, str
-            ):
-                if isinstance(self, GoogleProvider):
-                    # For GoogleProvider, each chunk contains the full (possibly updated) args dict as a JSON string.
-                    # Example: first chunk: {"location": "San Francisco"}
-                    #          second chunk: {"location": "San Francisco", "zip": "94107"}
-                    # We overwrite tool_call_args with the latest chunk.
-                    tool_call_args = content_data
-                else:
-                    # For other providers, tool_call_args is built up incrementally from deltas.
-                    tool_call_args += content_data
-                # update tool_call_delta to ai-sdk-ui structure
-                # based on https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol#tool-call-delta-part
-                content_data = {
-                    "toolCallId": tool_call_id,
-                    "argsTextDelta": content_data,
-                }
+                # Handle reasoning content with start/delta/end pattern
+                elif (
+                    content_type == "reasoning"
+                    and isinstance(content_data, str)
+                    and options.format_stream
+                ):
+                    if not has_reasoning_started:
+                        # Emit reasoning-start event
+                        current_reasoning_id = f"reasoning_{uuid.uuid4().hex}"
+                        yield convert_to_ai_sdk_messages(
+                            "", "reasoning_start", current_reasoning_id
+                        )
+                        has_reasoning_started = True
 
-            content_str = self._content_to_string(content_data)
+                    # Emit reasoning-delta event with the actual content
+                    yield convert_to_ai_sdk_messages(
+                        content_data, "reasoning", current_reasoning_id
+                    )
+                    continue
 
-            if options.format_stream:
-                stream_content = self._create_stream_content(
-                    content_data, content_type
-                )
-                content_str = self.format_stream(stream_content)
+                # Tool handling
+                if content_type == "tool_call_start" and isinstance(
+                    content_data, dict
+                ):
+                    tool_call_id: Optional[str] = content_data.get(
+                        "toolCallId", None
+                    )
+                    tool_call_name: Optional[str] = content_data.get(
+                        "toolName", None
+                    )
+                    # Sometimes GoogleProvider emits the args in the tool_call_start chunk
+                    tool_call_args: str = ""
+                    if content_data.get("args"):
+                        # don't yield args in tool_call_start chunk
+                        # it will throw an error in ai-sdk-ui
+                        tool_call_args = content_data.pop("args")
 
-            buffer += content_str
-            original_content += content_str
+                    if tool_call_id and tool_call_name:
+                        # Add new tool calls to the list for tracking
+                        tool_calls_order.append(tool_call_id)
+                        tool_calls[tool_call_id] = ActiveToolCall(
+                            tool_call_id=tool_call_id,
+                            tool_call_name=tool_call_name,
+                            tool_call_args=tool_call_args,
+                        )
 
-            yield buffer
-            buffer = ""
+                if content_type == "tool_call_delta" and isinstance(
+                    content_data, dict
+                ):
+                    tool_call_delta_id = content_data.get("toolCallId", None)
+                    tool_call_delta: str = content_data.get(
+                        "inputTextDelta", ""
+                    )
+
+                    if not tool_call_delta_id:
+                        if not tool_call_delta_id:
+                            LOGGER.error(
+                                f"Tool call id not found for tool call delta: {content_data}"
+                            )
+                        continue
+                    tool_call = tool_calls.get(tool_call_delta_id, None)
+                    if not tool_call:
+                        continue
+
+                    if isinstance(self, GoogleProvider):
+                        # For GoogleProvider, each chunk contains the full (possibly updated) args dict as a JSON string.
+                        # Example: first chunk: {"location": "San Francisco"}
+                        #          second chunk: {"location": "San Francisco", "zip": "94107"}
+                        # We overwrite tool_call_args with the latest chunk.
+                        tool_call.tool_call_args = tool_call_delta
+                    else:
+                        # For other providers, tool_call_args is built up incrementally from deltas.
+                        tool_call.tool_call_args += tool_call_delta
+                    # update tool_call_delta to ai-sdk-ui structure
+                    # based on https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol#tool-call-delta-part
+                    content_data = {
+                        "toolCallId": tool_call.tool_call_id,
+                        "inputTextDelta": tool_call.tool_call_args,
+                    }
+
+                content_str = self._content_to_string(content_data)
+
+                if options.format_stream:
+                    stream_content = self._create_stream_content(
+                        content_data, content_type
+                    )
+                    content_str = self.format_stream(stream_content)
+
+                buffer += content_str
+                original_content += content_str
+
+                yield buffer
+                buffer = ""
+
+        # Emit text-end event if we started a text block
+        if has_text_started and current_text_id and options.format_stream:
+            yield convert_to_ai_sdk_messages("", "text_end", current_text_id)
+
+        # Emit reasoning-end event if we started a reasoning block
+        if (
+            has_reasoning_started
+            and current_reasoning_id
+            and options.format_stream
+        ):
+            yield convert_to_ai_sdk_messages(
+                "", "reasoning_end", current_reasoning_id
+            )
 
         # Handle tool call end after the stream is complete
-        if tool_call_id and tool_call_name and not options.text_only:
-            content_data = {
-                "toolCallId": tool_call_id,
-                "toolName": tool_call_name,
-                "args": self.validate_tool_call_args(tool_call_args)
-                or {},  # empty object if tool doesnt have args
-            }
-            content_type = "tool_call_end"
-            yield self.format_stream((content_data, content_type))
-            # Reset tool call state for next stream just in case
-            tool_call_id = None
-            tool_call_name = None
-            tool_call_args = ""
+        if len(tool_calls_order) > 0 and not options.text_only:
+            for tool_call_id in tool_calls_order:
+                tool_call = tool_calls.get(tool_call_id, None)
+                if not tool_call:
+                    continue
+                content_data = {
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_call.tool_call_name,
+                    "input": self.validate_tool_call_args(
+                        tool_call.tool_call_args
+                    ),
+                }
+                content_type = "tool_call_end"
+                yield self.format_stream((content_data, content_type))
 
         # Add a final finish reason chunk
         if finish_reason and not options.text_only:
@@ -469,28 +438,58 @@ class OpenAIProvider(
     # https://openai.com/index/openai-o3-mini/
     DEFAULT_REASONING_EFFORT = "medium"
 
-    def is_reasoning_model(self, model: str) -> bool:
-        # only o-series models support reasoning
-        return model.startswith("o")
+    def _is_reasoning_model(self, model: str) -> bool:
+        """
+        Check if reasoning_effort should be added to the request.
+        Only add for actual OpenAI reasoning models, not for OpenAI-compatible APIs.
 
-    def get_client(self, config: AnyProviderConfig) -> OpenAI:
+        OpenAI-compatible APIs (identified by custom base_url) may not support
+        the reasoning_effort parameter even if the model name suggests it's a
+        reasoning model.
+        """
+        import re
+
+        # Check for reasoning model patterns: o{digit} or gpt-5, with optional openai/ prefix
+        reasoning_patterns = [
+            r"^openai/o\d",  # openai/o1, openai/o3, etc.
+            r"^o\d",  # o1, o3, etc.
+            r"^openai/gpt-5",  # openai/gpt-5*
+            r"^gpt-5",  # gpt-5*
+        ]
+
+        is_reasoning_model_name = any(
+            re.match(pattern, model) for pattern in reasoning_patterns
+        )
+
+        if not is_reasoning_model_name:
+            return False
+
+        # If using a custom base_url that's not OpenAI, don't assume reasoning is supported
+        if (
+            self.config.base_url
+            and "api.openai.com" not in self.config.base_url
+        ):
+            return False
+
+        return True
+
+    def get_client(self, config: AnyProviderConfig) -> AsyncOpenAI:
         DependencyManager.openai.require(why="for AI assistance with OpenAI")
 
         import ssl
-
-        # library to check if paths exists
         from pathlib import Path
-        from urllib.parse import parse_qs, urlparse
 
-        # ssl related libs, httpx is a dependency of openai
         import httpx
-        from openai import AzureOpenAI, OpenAI
+        from openai import AsyncOpenAI
 
         base_url = config.base_url or None
         key = config.api_key
 
         # Add SSL parameters/values
-        ssl_verify: bool = config.ssl_verify or True
+        ssl_verify: bool = (
+            config.ssl_verify if config.ssl_verify is not None else True
+        )
+        extra_headers: Optional[dict[str, str]] = config.extra_headers
         ca_bundle_path: Optional[str] = config.ca_bundle_path
         client_pem: Optional[str] = config.client_pem
 
@@ -510,67 +509,58 @@ class OpenAIProvider(
                     status_code=HTTPStatus.BAD_REQUEST,
                     detail="Client PEM is not a valid path or does not exist",
                 )
-        # Azure OpenAI clients are instantiated slightly differently
-        parsed_url = urlparse(base_url)
-        if parsed_url.hostname and cast(str, parsed_url.hostname).endswith(
-            ".openai.azure.com"
-        ):
-            deployment_model = cast(str, parsed_url.path).split("/")[3]
-            api_version = parse_qs(cast(str, parsed_url.query))["api-version"][
-                0
-            ]
-            return AzureOpenAI(
-                api_key=key,
-                api_version=api_version,
-                azure_deployment=deployment_model,
-                azure_endpoint=f"{cast(str, parsed_url.scheme)}://{cast(str, parsed_url.hostname)}",
-            )
-        else:
-            # the default httpx client uses ssl_verify=True by default under the hoood. We are checking if it's here, to see if the user overrides and uses false. If the ssl_verify argument isn't there, it is true by default
-            if ssl_verify:
-                ctx = None  # Initialize ctx to avoid UnboundLocalError
-                client = None  # Initialize client to avoid UnboundLocalError
-                if ca_bundle_path:
-                    ctx = ssl.create_default_context(cafile=ca_bundle_path)
-                if client_pem:
-                    # if ctx already exists from caBundlePath argument
-                    if ctx:
-                        ctx.load_cert_chain(certfile=client_pem)
-                    else:
-                        ctx = ssl.create_default_context()
-                        ctx.load_cert_chain(certfile=client_pem)
 
-                # if ssl context was created by the above statements
+        # the default httpx client uses ssl_verify=True by default under the hoood. We are checking if it's here, to see if the user overrides and uses false. If the ssl_verify argument isn't there, it is true by default
+        if ssl_verify:
+            ctx = None  # Initialize ctx to avoid UnboundLocalError
+            client = None  # Initialize client to avoid UnboundLocalError
+            if ca_bundle_path:
+                ctx = ssl.create_default_context(cafile=ca_bundle_path)
+            if client_pem:
+                # if ctx already exists from caBundlePath argument
                 if ctx:
-                    client = httpx.Client(verify=ctx)
+                    ctx.load_cert_chain(certfile=client_pem)
                 else:
-                    pass
-            else:
-                client = httpx.Client(verify=False)
+                    ctx = ssl.create_default_context()
+                    ctx.load_cert_chain(certfile=client_pem)
 
-            # if client is created, either with a custom context or with verify=False, use it as the http_client object in `OpenAI`
-            if client:
-                return OpenAI(
-                    default_headers={"api-key": key},
-                    api_key=key,
-                    base_url=base_url,
-                    http_client=client,
-                )
-            # if not, return bog standard OpenAI object
+            # if ssl context was created by the above statements
+            if ctx:
+                client = httpx.AsyncClient(verify=ctx)
             else:
-                return OpenAI(
-                    default_headers={"api-key": key},
-                    api_key=key,
-                    base_url=base_url,
-                )
+                pass
+        else:
+            client = httpx.AsyncClient(verify=False)
 
-    def stream_completion(
+        # if client is created, either with a custom context or with verify=False, use it as the http_client object in `AsyncOpenAI`
+        extra_headers = extra_headers or {}
+        project = config.project or None
+        if client:
+            return AsyncOpenAI(
+                default_headers={"api-key": key, **extra_headers},
+                api_key=key,
+                base_url=base_url,
+                project=project,
+                http_client=client,
+            )
+
+        # if not, return bog standard AsyncOpenAI object
+        return AsyncOpenAI(
+            default_headers={"api-key": key, **extra_headers},
+            api_key=key,
+            base_url=base_url,
+            project=project,
+        )
+
+    async def stream_completion(
         self,
         messages: list[ChatMessage],
         system_prompt: str,
         max_tokens: int,
+        additional_tools: list[ToolDefinition],
     ) -> OpenAiStream[ChatCompletionChunk]:
         client = self.get_client(self.config)
+        tools = self.config.tools
         create_params = {
             "model": self.model,
             "messages": cast(
@@ -582,23 +572,30 @@ class OpenAIProvider(
                     + messages
                 ),
             ),
-            "max_completion_tokens": max_tokens,
             "stream": True,
-            "timeout": 15,
-            "tools": convert_to_openai_tools(self.config.tools),
+            "timeout": LONG_THINKING_TIMEOUT
+            if self._is_reasoning_model(self.model)
+            else TIMEOUT,
         }
-        if self.is_reasoning_model(self.model):
+        if tools:
+            all_tools = tools + additional_tools
+            create_params["tools"] = convert_to_openai_tools(all_tools)
+        if self._is_reasoning_model(self.model):
             create_params["reasoning_effort"] = self.DEFAULT_REASONING_EFFORT
+            create_params["max_completion_tokens"] = max_tokens
+        else:
+            create_params["max_tokens"] = max_tokens
         return cast(
             "OpenAiStream[ChatCompletionChunk]",
-            client.chat.completions.create(**create_params),
+            await client.chat.completions.create(**create_params),
         )
 
     def extract_content(
         self,
         response: ChatCompletionChunk,
-        _tool_call_id: Optional[str] = None,
-    ) -> Optional[ExtractedContent]:
+        tool_call_ids: Optional[list[str]] = None,
+    ) -> Optional[ExtractedContentList]:
+        tool_call_ids = tool_call_ids or []
         if (
             hasattr(response, "choices")
             and response.choices
@@ -609,29 +606,42 @@ class OpenAIProvider(
             # Text content
             content = delta.content
             if content:
-                return (content, "text")
+                return [(content, "text")]
 
             # Tool call:
             if delta.tool_calls:
-                tool_calls = delta.tool_calls[0]
+                tool_content: ExtractedContentList = []
+                for tool_call in delta.tool_calls:
+                    tool_index = tool_call.index
 
-                # Start of tool call
-                # id is only present for the first tool call chunk
-                if (
-                    tool_calls.id
-                    and tool_calls.function
-                    and tool_calls.function.name
-                ):
-                    tool_info = {
-                        "toolCallId": tool_calls.id,
-                        "toolName": tool_calls.function.name,
-                    }
-                    return (tool_info, "tool_call_start")
+                    # Start of tool call
+                    # id is only present for the first tool call chunk
+                    if (
+                        tool_call.id
+                        and tool_call.function
+                        and tool_call.function.name
+                    ):
+                        tool_info = {
+                            "toolCallId": tool_call.id,
+                            "toolName": tool_call.function.name,
+                        }
+                        tool_content.append((tool_info, "tool_call_start"))
 
-                # Delta of tool call
-                # arguments is only present second chunk onwards
-                if tool_calls.function and tool_calls.function.arguments:
-                    return (tool_calls.function.arguments, "tool_call_delta")
+                    # Delta of tool call
+                    # arguments is only present second chunk onwards
+                    if (
+                        tool_call.function
+                        and tool_call.function.arguments
+                        and tool_call_ids[tool_index]
+                    ):
+                        tool_delta = {
+                            "toolCallId": tool_call_ids[tool_index],
+                            "inputTextDelta": tool_call.function.arguments,
+                        }
+                        tool_content.append((tool_delta, "tool_call_delta"))
+
+                # return the tool content
+                return tool_content
 
         return None
 
@@ -666,6 +676,72 @@ class OpenAIProvider(
         return messages
 
 
+class AzureOpenAIProvider(OpenAIProvider):
+    def _is_reasoning_model(self, model: str) -> bool:
+        # https://learn.microsoft.com/en-us/answers/questions/5519548/does-gpt-5-via-azure-support-reasoning-effort-and
+        # Only custom models support reasoning effort, we can expose this as a parameter in the future
+        del model
+        return False
+
+    def _handle_azure_openai(self, base_url: str) -> tuple[str, str, str]:
+        """Handle Azure OpenAI.
+        Sample base URL: https://<your-resource-name>.openai.azure.com/openai/deployments/<deployment_name>?api-version=<api-version>
+
+        Args:
+            base_url (str): The base URL of the Azure OpenAI.
+
+        Returns:
+            tuple[str, str, str]: The API version, deployment name, and endpoint.
+        """
+
+        parsed_url = urlparse(base_url)
+
+        deployment_name = parsed_url.path.split("/")[3]
+        api_version = parse_qs(parsed_url.query)["api-version"][0]
+
+        endpoint = f"{parsed_url.scheme}://{parsed_url.hostname}"
+        return api_version, deployment_name, endpoint
+
+    def get_client(self, config: AnyProviderConfig) -> AsyncOpenAI:
+        from openai import AsyncAzureOpenAI
+
+        base_url = config.base_url or None
+        key = config.api_key
+
+        if base_url is None:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST,
+                detail="Base URL needed to get the endpoint",
+            )
+
+        api_version = None
+        deployment_name = None
+        endpoint = None
+
+        if base_url:
+            if "services.ai.azure.com" in base_url:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST,
+                    detail="To use Azure AI Foundry, use the OpenAI-compatible provider instead.",
+                )
+            elif "openai.azure.com" in base_url:
+                api_version, deployment_name, endpoint = (
+                    self._handle_azure_openai(base_url)
+                )
+            else:
+                LOGGER.warning(f"Unknown Azure OpenAI base URL: {base_url}")
+                api_version, deployment_name, endpoint = (
+                    self._handle_azure_openai(base_url)
+                )
+
+        return AsyncAzureOpenAI(
+            api_key=key,
+            api_version=api_version,
+            azure_deployment=deployment_name,
+            azure_endpoint=endpoint or "",
+        )
+
+
 class AnthropicProvider(
     CompletionProvider[
         "RawMessageStreamEvent", "AnthropicStream[RawMessageStreamEvent]"
@@ -688,6 +764,9 @@ class AnthropicProvider(
     # 1024 tokens is the minimum budget for extended thinking
     DEFAULT_EXTENDED_THINKING_BUDGET_TOKENS = 1024
 
+    # Map of block index to tool call id for tool call delta chunks
+    block_index_to_tool_call_id_map: dict[int, str] = {}
+
     def is_extended_thinking_model(self, model: str) -> bool:
         return any(
             model.startswith(prefix)
@@ -701,21 +780,26 @@ class AnthropicProvider(
             else self.DEFAULT_TEMPERATURE
         )
 
-    def get_client(self, config: AnyProviderConfig) -> Client:
+    def get_client(self, config: AnyProviderConfig) -> AsyncClient:
         DependencyManager.anthropic.require(
             why="for AI assistance with Anthropic"
         )
-        from anthropic import Client
+        from anthropic import AsyncClient
 
-        return Client(api_key=config.api_key)
+        return AsyncClient(api_key=config.api_key)
 
-    def stream_completion(
+    def maybe_get_tool_call_id(self, block_index: int) -> Optional[str]:
+        return self.block_index_to_tool_call_id_map.get(block_index, None)
+
+    async def stream_completion(
         self,
         messages: list[ChatMessage],
         system_prompt: str,
         max_tokens: int,
+        additional_tools: list[ToolDefinition],
     ) -> AnthropicStream[RawMessageStreamEvent]:
         client = self.get_client(self.config)
+        tools = self.config.tools
         create_params = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -723,11 +807,13 @@ class AnthropicProvider(
                 Any,
                 convert_to_anthropic_messages(messages),
             ),
-            "tools": convert_to_anthropic_tools(self.config.tools),
             "system": system_prompt,
             "stream": True,
             "temperature": self.get_temperature(),
         }
+        if tools:
+            all_tools = tools + additional_tools
+            create_params["tools"] = convert_to_anthropic_tools(all_tools)
         if self.is_extended_thinking_model(self.model):
             create_params["thinking"] = {
                 "type": "enabled",
@@ -735,14 +821,18 @@ class AnthropicProvider(
             }
         return cast(
             "AnthropicStream[RawMessageStreamEvent]",
-            client.messages.create(**create_params),
+            await client.messages.create(**create_params),
         )
+
+    def block_index_to_tool_call_id(self, block_index: int) -> str:
+        return f"tool_call_{block_index}"
 
     def extract_content(
         self,
         response: RawMessageStreamEvent,
-        _tool_call_id: Optional[str] = None,
-    ) -> Optional[ExtractedContent]:
+        tool_call_ids: Optional[list[str]] = None,
+    ) -> Optional[ExtractedContentList]:
+        del tool_call_ids
         from anthropic.types import (
             InputJSONDelta,
             RawContentBlockDeltaEvent,
@@ -756,25 +846,46 @@ class AnthropicProvider(
         # For streaming content
         if isinstance(response, RawContentBlockDeltaEvent):
             if isinstance(response.delta, TextDelta):
-                return (response.delta.text, "text")
+                return [(response.delta.text, "text")]
             if isinstance(response.delta, ThinkingDelta):
-                return (response.delta.thinking, "reasoning")
+                return [(response.delta.thinking, "reasoning")]
             if isinstance(response.delta, InputJSONDelta):
-                return (response.delta.partial_json, "tool_call_delta")
+                block_index = response.index
+                tool_call_id = self.maybe_get_tool_call_id(block_index)
+                if not tool_call_id:
+                    LOGGER.error(
+                        f"Tool call id not found for block index: {response.index}"
+                    )
+                    return None
+                delta_json = response.delta.partial_json
+                tool_delta = {
+                    "toolCallId": tool_call_id,
+                    "inputTextDelta": delta_json,
+                }
+                return [(tool_delta, "tool_call_delta")]
             if isinstance(response.delta, SignatureDelta):
-                return (
-                    {"signature": response.delta.signature},
-                    "reasoning_signature",
-                )
+                return [
+                    (
+                        {"signature": response.delta.signature},
+                        "reasoning_signature",
+                    )
+                ]
 
         # For the beginning of a tool use block
         if isinstance(response, RawContentBlockStartEvent):
             if isinstance(response.content_block, ToolUseBlock):
+                tool_call_id = response.content_block.id
+                tool_call_name = response.content_block.name
+                block_index = response.index
+                # Store the tool call id for the block index
+                self.block_index_to_tool_call_id_map[block_index] = (
+                    tool_call_id
+                )
                 tool_info = {
-                    "toolCallId": response.content_block.id,
-                    "toolName": response.content_block.name,
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_call_name,
                 }
-                return (tool_info, "tool_call_start")
+                return [(tool_info, "tool_call_start")]
 
         return None
 
@@ -798,7 +909,9 @@ class AnthropicProvider(
 
 
 class GoogleProvider(
-    CompletionProvider["GenerateContentResponse", "GenerateContentResponse"]
+    CompletionProvider[
+        "GenerateContentResponse", "AsyncIterator[GenerateContentResponse]"
+    ]
 ):
     # Based on the docs:
     # https://cloud.google.com/vertex-ai/generative-ai/docs/thinking
@@ -807,20 +920,29 @@ class GoogleProvider(
         "gemini-2.5-flash",
     ]
 
+    # Keep a persistent async client to avoid closing during stream iteration
+    _client: Optional[GoogleClient] = None
+
     def is_thinking_model(self, model: str) -> bool:
         return any(
             model.startswith(prefix) for prefix in self.THINKING_MODEL_PREFIXES
         )
 
     def get_config(
-        self, system_prompt: str, max_tokens: int
+        self,
+        system_prompt: str,
+        max_tokens: int,
+        additional_tools: list[ToolDefinition],
     ) -> GenerateContentConfig:
+        tools = self.config.tools
         config = {
             "system_instruction": system_prompt,
             "temperature": 0,
             "max_output_tokens": max_tokens,
-            "tools": convert_to_google_tools(self.config.tools),
         }
+        if tools:
+            all_tools = tools + additional_tools
+            config["tools"] = convert_to_google_tools(all_tools)
         if self.is_thinking_model(self.model):
             config["thinking_config"] = {
                 "include_thoughts": True,
@@ -836,27 +958,52 @@ class GoogleProvider(
             )
             from google import genai  # type: ignore
 
-        return genai.Client(api_key=config.api_key)
+        # Reuse a stored async client if already created
+        if self._client is not None:
+            return self._client
 
-    def stream_completion(
+        # If no API key is provided, try to use environment variables and ADC
+        # This supports Google Vertex AI usage without explicit API keys
+        if not config.api_key:
+            # Check if GOOGLE_GENAI_USE_VERTEXAI is set to enable Vertex AI mode
+            use_vertex = (
+                os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+            )
+            if use_vertex:
+                project = os.getenv("GOOGLE_CLOUD_PROJECT")
+                location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+                self._client = genai.Client(
+                    vertexai=True, project=project, location=location
+                ).aio
+            else:
+                # Try default initialization which may work with environment variables
+                self._client = genai.Client().aio
+
+            # Return vertex or default client
+            return self._client
+
+        self._client = genai.Client(api_key=config.api_key).aio
+        return self._client
+
+    async def stream_completion(
         self,
         messages: list[ChatMessage],
         system_prompt: str,
         max_tokens: int,
-    ) -> Iterator[GenerateContentResponse]:
+        additional_tools: list[ToolDefinition],
+    ) -> AsyncIterator[GenerateContentResponse]:
         client = self.get_client(self.config)
-        return cast(
-            "Iterator[GenerateContentResponse]",
-            client.models.generate_content_stream(
-                model=self.model,
-                contents=convert_to_google_messages(messages),
-                config=self.get_config(
-                    system_prompt=system_prompt, max_tokens=max_tokens
-                ),
+        return await client.models.generate_content_stream(  # type: ignore[reportReturnType]
+            model=self.model,
+            contents=convert_to_google_messages(messages),
+            config=self.get_config(
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                additional_tools=additional_tools,
             ),
         )
 
-    def _get_tool_call_id(self, tool_call_id: Optional[str]) -> Optional[str]:
+    def _get_tool_call_id(self, tool_call_id: Optional[str]) -> str:
         # Custom tools don't have an id, so we have to generate a random uuid
         # https://ai.google.dev/gemini-api/docs/function-calling?example=meeting
         if not tool_call_id:
@@ -867,8 +1014,9 @@ class GoogleProvider(
     def extract_content(
         self,
         response: GenerateContentResponse,
-        tool_call_id: Optional[str] = None,
-    ) -> Optional[ExtractedContent]:
+        tool_call_ids: Optional[list[str]] = None,
+    ) -> Optional[ExtractedContentList]:
+        tool_call_ids = tool_call_ids or []
         if not response.candidates:
             return None
 
@@ -879,39 +1027,65 @@ class GoogleProvider(
         if not candidate.content.parts:
             return None
 
-        for part in candidate.content.parts:
-            # Start of tool call
-            # GoogleProvider may emit the function_call object in every chunk, not just the first.
-            # We use tool_call_id to ensure we only emit one tool_call_start event per tool call.
-            if part.function_call and not tool_call_id:
-                tool_info = {
-                    "toolCallId": self._get_tool_call_id(
-                        part.function_call.id
-                    ),
-                    "toolName": part.function_call.name,
-                    "args": json.dumps(part.function_call.args),
-                }
-                return (tool_info, "tool_call_start")
-            # Tool call args (not delta)
-            elif part.function_call and part.function_call.args:
-                return (json.dumps(part.function_call.args), "tool_call_delta")
+        # Build events by first scanning parts and rectifying tool calls by position
+        content: ExtractedContentList = []
+        function_call_index = -1
+        seen_in_frame: set[int] = set()
 
-            # Skip non-text content
-            elif part.text:
-                # Reasoning content
-                if part.thought:
-                    return (part.text, "reasoning")
+        for part in candidate.content.parts:
+            # Handle function calls (may appear multiple times per chunk)
+            if part.function_call:
+                function_call_index += 1
+                # Resolve a stable id by position if provided from the caller; else synthesize
+                stable_id = (
+                    tool_call_ids[function_call_index]
+                    if function_call_index < len(tool_call_ids)
+                    and tool_call_ids[function_call_index]
+                    else self._get_tool_call_id(part.function_call.id)
+                )
+
+                # First sight of this call index in this frame => emit start
+                if function_call_index not in seen_in_frame:
+                    tool_info = {
+                        "toolCallId": stable_id,
+                        "toolName": part.function_call.name,
+                        "args": json.dumps(part.function_call.args),
+                    }
+                    content.append((tool_info, "tool_call_start"))
+                    seen_in_frame.add(function_call_index)
                 else:
-                    return (part.text, "text")
-            else:
+                    # Subsequent occurrences for the same index => treat as delta (snapshot semantics)
+                    if part.function_call.args is not None:
+                        tool_delta = {
+                            "toolCallId": stable_id,
+                            "inputTextDelta": json.dumps(
+                                part.function_call.args
+                            ),
+                        }
+                        content.append((tool_delta, "tool_call_delta"))
                 continue
-        return None
+
+            # Text/Reasoning handling
+            if part.text:
+                if part.thought:
+                    content.append((part.text, "reasoning"))
+                else:
+                    content.append((part.text, "text"))
+                continue
+
+            # Ignore other non-text parts (e.g., images) at this layer
+            continue
+
+        return content
 
     def get_finish_reason(
         self, response: GenerateContentResponse
     ) -> Optional[FinishReason]:
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
+        if not response.candidates:
+            return None
+        first_candidate = response.candidates[0]
+        if first_candidate.content and first_candidate.content.parts:
+            for part in first_candidate.content.parts:
                 if part.function_call:
                     return "tool_calls"
         if response.candidates and response.candidates[0].finish_reason:
@@ -944,38 +1118,45 @@ class BedrockProvider(
                 detail="Error setting up AWS credentials",
             ) from e
 
-    def stream_completion(
+    async def stream_completion(
         self,
         messages: list[ChatMessage],
         system_prompt: str,
         max_tokens: int,
+        additional_tools: list[ToolDefinition],
     ) -> LitellmStream:
         DependencyManager.litellm.require(why="for AI assistance with Bedrock")
         DependencyManager.boto3.require(why="for AI assistance with Bedrock")
-        from litellm import completion as litellm_completion
+        from litellm import acompletion as litellm_completion
 
         self.setup_credentials(self.config)
+        tools = self.config.tools
 
-        return litellm_completion(
-            model=self.model,
-            messages=cast(
+        config = {
+            "model": self.model,
+            "messages": cast(
                 Any,
                 convert_to_openai_messages(
                     [ChatMessage(role="system", content=system_prompt)]
                     + messages
                 ),
             ),
-            max_completion_tokens=max_tokens,
-            stream=True,
-            timeout=15,
-            tools=convert_to_openai_tools(self.config.tools),
-        )
+            "max_completion_tokens": max_tokens,
+            "stream": True,
+            "timeout": TIMEOUT,
+        }
+        if tools:
+            all_tools = tools + additional_tools
+            config["tools"] = convert_to_openai_tools(all_tools)
+
+        return await litellm_completion(**config)
 
     def extract_content(
         self,
         response: LitellmStreamResponse,
-        _tool_call_id: Optional[str] = None,
-    ) -> Optional[ExtractedContent]:
+        tool_call_ids: Optional[list[str]] = None,
+    ) -> Optional[ExtractedContentList]:
+        tool_call_ids = tool_call_ids or []
         if (
             hasattr(response, "choices")
             and response.choices
@@ -986,30 +1167,42 @@ class BedrockProvider(
             # Text content
             content = delta.content
             if content:
-                return (str(content), "text")
+                return [(str(content), "text")]
 
             # Tool call: LiteLLM follows OpenAI format for tool calls
+
             if hasattr(delta, "tool_calls") and delta.tool_calls:
-                tool_calls = delta.tool_calls[0]
+                tool_content: ExtractedContentList = []
 
-                # Start of tool call
-                # id is only present for the first tool call chunk
-                if hasattr(tool_calls, "id") and tool_calls.id:
-                    tool_info = {
-                        "toolCallId": tool_calls.id,
-                        "toolName": tool_calls.function.name,
-                    }
-                    return (tool_info, "tool_call_start")
+                for tool_call in delta.tool_calls:
+                    tool_index: int = tool_call.index
 
-                # Delta of tool call
-                # arguments is only present second chunk onwards
-                if (
-                    hasattr(tool_calls, "function")
-                    and tool_calls.function
-                    and hasattr(tool_calls.function, "arguments")
-                    and tool_calls.function.arguments
-                ):
-                    return (tool_calls.function.arguments, "tool_call_delta")
+                    # Start of tool call
+                    # id is only present for the first tool call chunk
+                    if hasattr(tool_call, "id") and tool_call.id:
+                        tool_info = {
+                            "toolCallId": tool_call.id,
+                            "toolName": tool_call.function.name,
+                        }
+                        tool_content.append((tool_info, "tool_call_start"))
+
+                    # Delta of tool call
+                    # arguments is only present second chunk onwards
+                    if (
+                        hasattr(tool_call, "function")
+                        and tool_call.function
+                        and hasattr(tool_call.function, "arguments")
+                        and tool_call.function.arguments
+                        and tool_call_ids[tool_index]
+                    ):
+                        tool_delta = {
+                            "toolCallId": tool_call_ids[tool_index],
+                            "inputTextDelta": tool_call.function.arguments,
+                        }
+                        tool_content.append((tool_delta, "tool_call_delta"))
+
+                # return the tool content
+                return tool_content
 
         return None
 
@@ -1029,50 +1222,31 @@ class BedrockProvider(
         return None
 
 
-def _model_is_google(model: str) -> bool:
-    return model.startswith("google") or model.startswith("gemini")
-
-
-def _model_is_anthropic(model: str) -> bool:
-    return model.startswith("claude")
-
-
-def _model_is_bedrock(model: str) -> bool:
-    return model.startswith("bedrock/")
-
-
 def get_completion_provider(
     config: AnyProviderConfig, model: str
 ) -> CompletionProvider[Any, Any]:
-    if _model_is_anthropic(model):
-        return AnthropicProvider(model, config)
-    elif _model_is_google(model):
-        return GoogleProvider(model, config)
-    elif _model_is_bedrock(model):
-        return BedrockProvider(model, config)
+    model_id = AiModelId.from_model(model)
+
+    if model_id.provider == "anthropic":
+        return AnthropicProvider(model_id.model, config)
+    elif model_id.provider == "google":
+        return GoogleProvider(model_id.model, config)
+    elif model_id.provider == "bedrock":
+        return BedrockProvider(model_id.model, config)
+    elif model_id.provider == "azure":
+        return AzureOpenAIProvider(model_id.model, config)
+    elif model_id.provider == "openrouter":
+        return OpenAIProvider(model_id.model, config)
     else:
-        return OpenAIProvider(model, config)
+        return OpenAIProvider(model_id.model, config)
 
 
-def get_model(config: AiConfig) -> str:
-    model: str = config.get("open_ai", {}).get("model", DEFAULT_MODEL)
-    if not model:
-        model = DEFAULT_MODEL
-    return model
-
-
-def get_max_tokens(config: MarimoConfig) -> int:
-    if "ai" not in config:
-        return DEFAULT_MAX_TOKENS
-    if "max_tokens" not in config["ai"]:
-        return DEFAULT_MAX_TOKENS
-    return config["ai"]["max_tokens"]
-
-
-def merge_backticks(chunks: Iterator[str]) -> Generator[str, None, None]:
+async def merge_backticks(
+    chunks: AsyncIterator[str],
+) -> AsyncGenerator[str, None]:
     buffer: Optional[str] = None
 
-    for chunk in chunks:
+    async for chunk in chunks:
         if buffer is None:
             buffer = chunk
         else:
@@ -1094,14 +1268,14 @@ def merge_backticks(chunks: Iterator[str]) -> Generator[str, None, None]:
         yield buffer
 
 
-def without_wrapping_backticks(
-    chunks: Iterator[str],
-) -> Generator[str, None, None]:
+async def without_wrapping_backticks(
+    chunks: AsyncIterator[str],
+) -> AsyncGenerator[str, None]:
     """
     Removes the first and last backticks (```) from a stream of text chunks.
 
     Args:
-        chunks: An iterator of text chunks
+        chunks: An async iterator of text chunks
 
     Yields:
         Text chunks with the first and last backticks removed if they exist
@@ -1116,7 +1290,7 @@ def without_wrapping_backticks(
     buffer: Optional[str] = None
     has_starting_backticks = False
 
-    for chunk in chunks:
+    async for chunk in chunks:
         # Handle the first chunk
         if first_chunk:
             first_chunk = False

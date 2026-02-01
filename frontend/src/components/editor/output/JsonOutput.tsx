@@ -192,15 +192,21 @@ const CollapsibleTextOutput = (props: { text: string }) => {
 const LEAF_RENDERERS = {
   "image/": (value: string) => <ImageOutput src={value} />,
   "video/": (value: string) => <VideoOutput src={value} />,
-  "text/html:": (value: string) => <HtmlOutput html={value} inline={true} />,
+  "text/html:": (value: string) => (
+    <HtmlOutput html={value} inline={true} alwaysSanitizeHtml={false} />
+  ),
+  "text/markdown:": (value: string) => (
+    <HtmlOutput html={value} inline={true} alwaysSanitizeHtml={true} />
+  ),
   "text/plain+float:": (value: string) => <span>{value}</span>,
+  "text/plain+bigint:": (value: string) => <span>{value}</span>,
   "text/plain+set:": (value: string) => <span>set{value}</span>,
   "text/plain+tuple:": (value: string) => <span>{value}</span>,
   "text/plain:": (value: string) => <CollapsibleTextOutput text={value} />,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const MIME_TYPES: Array<DataType<any>> = Object.entries(LEAF_RENDERERS).map(
+const MIME_TYPES: DataType<any>[] = Object.entries(LEAF_RENDERERS).map(
   ([leafType, render]) => ({
     is: (value) => typeof value === "string" && value.startsWith(leafType),
     PostComponent: PyCopyButton,
@@ -351,6 +357,9 @@ function pythonJsonReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "object") {
     return value;
   }
+  if (typeof value === "bigint") {
+    return `${REPLACE_PREFIX}${value}${REPLACE_SUFFIX}`;
+  }
   if (Array.isArray(value)) {
     return value;
   }
@@ -358,6 +367,11 @@ function pythonJsonReplacer(_key: string, value: unknown): unknown {
     // If float, we want to keep the quotes around the number.
     if (value.startsWith("text/plain+float:")) {
       return `${REPLACE_PREFIX}${leafData(value)}${REPLACE_SUFFIX}`;
+    }
+    if (value.startsWith("text/plain+bigint:")) {
+      // Use BigInt to avoid precision loss
+      const number = BigInt(leafData(value));
+      return `${REPLACE_PREFIX}${number}${REPLACE_SUFFIX}`;
     }
     if (value.startsWith("text/plain+tuple:")) {
       // replace first and last characters [] with ()

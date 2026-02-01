@@ -3,8 +3,8 @@
 import { closeCompletion, completionStatus } from "@codemirror/autocomplete";
 import { type Extension, Prec } from "@codemirror/state";
 import { EditorView, type KeyBinding, keymap } from "@codemirror/view";
-import { createTracebackInfoAtom, SCRATCH_CELL_ID } from "@/core/cells/cells";
-import { type CellId, HTMLCellId } from "@/core/cells/ids";
+import { createTracebackInfoAtom } from "@/core/cells/cells";
+import { type CellId, HTMLCellId, SCRATCH_CELL_ID } from "@/core/cells/ids";
 import type { KeymapConfig } from "@/core/config/config-schema";
 import type { HotkeyProvider } from "@/core/hotkeys/hotkeys";
 import { store } from "@/core/state/jotai";
@@ -135,6 +135,26 @@ function cellKeymaps({
         run: (ev) => {
           const actions = ev.state.facet(cellActionsState);
           actions.moveCell({ cellId, before: false });
+          return true;
+        },
+      },
+      {
+        key: hotkeys.getHotkey("cell.moveLeft").key,
+        preventDefault: true,
+        stopPropagation: true,
+        run: (ev) => {
+          const actions = ev.state.facet(cellActionsState);
+          actions.moveCell({ cellId, before: true, direction: "left" });
+          return true;
+        },
+      },
+      {
+        key: hotkeys.getHotkey("cell.moveRight").key,
+        preventDefault: true,
+        stopPropagation: true,
+        run: (ev) => {
+          const actions = ev.state.facet(cellActionsState);
+          actions.moveCell({ cellId, before: false, direction: "right" });
           return true;
         },
       },

@@ -4,6 +4,7 @@ import { SearchQuery } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { getAllEditorViews } from "@/core/cells/cells";
+import { replaceEditorContent } from "@/core/codemirror/replace-editor-content";
 import { store } from "@/core/state/jotai";
 import { asQueryCreator, type QueryType } from "./query";
 import { findReplaceAtom } from "./state";
@@ -110,7 +111,7 @@ export const findPrev = findInDirection("prev");
  */
 export const replaceAll = searchCommand(({ query }) => {
   const views = getAllEditorViews();
-  const undoHandlers: Array<() => void> = [];
+  const undoHandlers: (() => void)[] = [];
   for (const view of views) {
     if (view.state.readOnly) {
       continue;
@@ -127,8 +128,7 @@ export const replaceAll = searchCommand(({ query }) => {
 
     const prevDoc = view.state.doc.toString();
     undoHandlers.push(() => {
-      view.dispatch({
-        changes: [{ from: 0, to: view.state.doc.length, insert: prevDoc }],
+      replaceEditorContent(view, prevDoc, {
         userEvent: "input.replace.all",
       });
     });

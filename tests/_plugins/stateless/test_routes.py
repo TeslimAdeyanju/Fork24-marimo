@@ -1,8 +1,6 @@
 # Copyright 2024 Marimo. All rights reserved.
 from __future__ import annotations
 
-import gc
-
 from marimo._runtime.context import get_context
 from marimo._runtime.context.types import RuntimeContext
 from marimo._runtime.runtime import Kernel
@@ -28,7 +26,6 @@ async def test_routes_lazy(k: Kernel, exec_req: ExecReqProvider) -> None:
         ]
     )
 
-    gc.collect()
     context: RuntimeContext = get_context()
     # 4 functions, 1 for each route
     assert len(context.function_registry.namespaces.values()) == 4
@@ -77,6 +74,4 @@ async def test_routes_non_lazy(k: Kernel, exec_req: ExecReqProvider) -> None:
     routes = k.globals["routes"]
     children = "<span>42</span><span>45</span>"
     assert children in routes.text
-    assert (
-        "data-routes='[&quot;#/&quot;, &quot;{/*path}&quot;]'" in routes.text
-    )
+    assert "data-routes='[&quot;#/&quot;,&quot;{/*path}&quot;]'" in routes.text

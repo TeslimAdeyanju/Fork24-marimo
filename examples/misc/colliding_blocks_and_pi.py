@@ -9,7 +9,7 @@
 
 import marimo
 
-__generated_with = "0.11.20"
+__generated_with = "0.17.4"
 app = marimo.App()
 
 
@@ -21,15 +21,13 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Finding $\pi$ in colliding blocks
+    mo.md(r"""
+    # Finding $\pi$ in colliding blocks
 
-        One of the remarkable things about mathematical constants like $\pi$ is how frequently they arise in nature, in the most surprising of places.
+    One of the remarkable things about mathematical constants like $\pi$ is how frequently they arise in nature, in the most surprising of places.
 
-        Inspired by 3Blue1Brown, this [marimo notebook](https://github.com/marimo-team/marimo) shows how the number of collisions incurred in a particular system involving two blocks converges to the digits in $\pi$.
-        """
-    )
+    Inspired by 3Blue1Brown, this [marimo notebook](https://github.com/marimo-team/marimo) shows how the number of collisions incurred in a particular system involving two blocks converges to the digits in $\pi$.
+    """)
     return
 
 
@@ -41,7 +39,9 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("""## Simulate!""")
+    mo.md("""
+    ## Simulate!
+    """)
     return
 
 
@@ -71,7 +71,7 @@ def _(run_button, simulate_collisions, slider):
         _, ani, collisions = simulate_collisions(
             mass_ratio, total_time=15, dt=0.001
         )
-    return ani, collisions, mass_ratio
+    return (ani,)
 
 
 @app.cell
@@ -81,18 +81,16 @@ def _(ani, mo, run_button):
         with mo.status.spinner(title="Rendering collision video ..."):
             video = mo.Html(ani.to_html5_video())
     video
-    return (video,)
+    return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## The 3Blue1Brown video
+    mo.md(r"""
+    ## The 3Blue1Brown video
 
-        If you haven't seen it, definitely check out the video that inspired this notebook:
-        """
-    )
+    If you haven't seen it, definitely check out the video that inspired this notebook:
+    """)
     return
 
 
@@ -114,58 +112,54 @@ def _():
     import matplotlib.pyplot as plt
     import matplotlib.animation as animation
     from matplotlib.patches import Rectangle
-    return Rectangle, animation, np, plt
+    return Rectangle, animation, plt
+
+
+@app.class_definition
+class Block:
+    def __init__(self, mass, velocity, position, size=1.0):
+        self.mass = mass
+        self.velocity = velocity
+        self.position = position
+        self.size = size
+
+    def update(self, dt):
+        self.position += self.velocity * dt
+
+    def collide(self, other):
+        # Calculate velocities after elastic collision
+        m1, m2 = self.mass, other.mass
+        v1, v2 = self.velocity, other.velocity
+
+        new_v1 = (m1 - m2) / (m1 + m2) * v1 + (2 * m2) / (m1 + m2) * v2
+        new_v2 = (2 * m1) / (m1 + m2) * v1 + (m2 - m1) / (m1 + m2) * v2
+
+        self.velocity = new_v1
+        other.velocity = new_v2
+
+        return 1
+
+
+@app.function
+def check_collisions(small_block, big_block, wall_pos=0):
+    collisions = 0
+
+    # Check for collision between blocks
+    if small_block.position + small_block.size > big_block.position:
+        small_block.position = big_block.position - small_block.size
+        collisions += small_block.collide(big_block)
+
+    # Check for collision with the wall
+    if small_block.position < wall_pos:
+        small_block.position = wall_pos
+        small_block.velocity *= -1
+        collisions += 1
+
+    return collisions
 
 
 @app.cell
-def _():
-    class Block:
-        def __init__(self, mass, velocity, position, size=1.0):
-            self.mass = mass
-            self.velocity = velocity
-            self.position = position
-            self.size = size
-
-        def update(self, dt):
-            self.position += self.velocity * dt
-
-        def collide(self, other):
-            # Calculate velocities after elastic collision
-            m1, m2 = self.mass, other.mass
-            v1, v2 = self.velocity, other.velocity
-
-            new_v1 = (m1 - m2) / (m1 + m2) * v1 + (2 * m2) / (m1 + m2) * v2
-            new_v2 = (2 * m1) / (m1 + m2) * v1 + (m2 - m1) / (m1 + m2) * v2
-
-            self.velocity = new_v1
-            other.velocity = new_v2
-
-            return 1  # Return 1 collision
-    return (Block,)
-
-
-@app.cell
-def check_collisions():
-    def check_collisions(small_block, big_block, wall_pos=0):
-        collisions = 0
-
-        # Check for collision between blocks
-        if small_block.position + small_block.size > big_block.position:
-            small_block.position = big_block.position - small_block.size
-            collisions += small_block.collide(big_block)
-
-        # Check for collision with the wall
-        if small_block.position < wall_pos:
-            small_block.position = wall_pos
-            small_block.velocity *= -1
-            collisions += 1
-
-        return collisions
-    return (check_collisions,)
-
-
-@app.cell
-def _(Block, check_collisions, create_animation):
+def _(create_animation):
     def simulate_collisions(mass_ratio, total_time=15, dt=0.001, animate=True):
         # Initialize blocks
         small_block = Block(mass=1, velocity=0, position=2)

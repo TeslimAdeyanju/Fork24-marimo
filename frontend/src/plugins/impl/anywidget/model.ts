@@ -5,20 +5,21 @@ import type { AnyModel } from "@anywidget/types";
 import { dequal } from "dequal";
 import { debounce } from "lodash-es";
 import { z } from "zod";
-import { sendModelValue } from "@/core/network/requests";
+import { getRequestClient } from "@/core/network/requests";
 import { assertNever } from "@/utils/assertNever";
 import { Deferred } from "@/utils/Deferred";
 import { updateBufferPaths } from "@/utils/data-views";
 import { throwNotImplemented } from "@/utils/functions";
-import type { Base64String } from "@/utils/json/base64";
 import { Logger } from "@/utils/Logger";
 
 export type EventHandler = (...args: any[]) => void;
 
 class ModelManager {
   private models = new Map<string, Deferred<Model<any>>>();
-
-  constructor(private timeout = 10_000) {}
+  private timeout: number;
+  constructor(timeout = 10_000) {
+    this.timeout = timeout;
+  }
 
   get(key: string): Promise<Model<any>> {
     let deferred = this.models.get(key);
@@ -64,16 +65,25 @@ export class Model<T extends Record<string, any>> implements AnyModel<T> {
   private ANY_CHANGE_EVENT = "change";
   private dirtyFields;
   public static _modelManager: ModelManager = MODEL_MANAGER;
+  private data: T;
+  private onChange: (value: Partial<T>) => void;
+  private sendToWidget: (req: {
+    content?: any;
+    buffers?: ArrayBuffer[] | ArrayBufferView[];
+  }) => Promise<null | undefined>;
 
   constructor(
-    private data: T,
-    private onChange: (value: Partial<T>) => void,
-    private sendToWidget: (req: {
+    data: T,
+    onChange: (value: Partial<T>) => void,
+    sendToWidget: (req: {
       content?: any;
       buffers?: ArrayBuffer[] | ArrayBufferView[];
     }) => Promise<null | undefined>,
     initialDirtyFields: Set<keyof T>,
   ) {
+    this.data = data;
+    this.onChange = onChange;
+    this.sendToWidget = sendToWidget;
     this.dirtyFields = new Set(initialDirtyFields);
   }
 
@@ -160,7 +170,7 @@ export class Model<T extends Record<string, any>> implements AnyModel<T> {
    * When receiving a message from the backend.
    * We want to notify all listeners with `msg:custom`
    */
-  receiveCustomMessage(message: any, buffers?: DataView[]): void {
+  receiveCustomMessage(message: any, buffers: readonly DataView[] = []): void {
     const response = AnyWidgetMessageSchema.safeParse(message);
     if (response.success) {
       const data = response.data;
@@ -204,7 +214,7 @@ export class Model<T extends Record<string, any>> implements AnyModel<T> {
 }
 
 const BufferPathSchema = z.array(z.array(z.union([z.string(), z.number()])));
-const StateSchema = z.record(z.any());
+const StateSchema = z.record(z.string(), z.any());
 
 const AnyWidgetMessageSchema = z.discriminatedUnion("method", [
   z.object({
@@ -241,12 +251,17 @@ export function isMessageWidgetState(msg: unknown): msg is AnyWidgetMessage {
   return AnyWidgetMessageSchema.safeParse(msg).success;
 }
 
-export async function handleWidgetMessage(
-  modelId: string,
-  msg: AnyWidgetMessage,
-  buffers: Base64String[],
-  modelManager: ModelManager,
-): Promise<void> {
+export async function handleWidgetMessage({
+  modelId,
+  msg,
+  buffers,
+  modelManager,
+}: {
+  modelId: string;
+  msg: AnyWidgetMessage;
+  buffers: readonly DataView[];
+  modelManager: ModelManager;
+}): Promise<void> {
   if (msg.method === "echo_update") {
     // We don't need to do anything with this message
     return;
@@ -275,7 +290,7 @@ export async function handleWidgetMessage(
         );
         // TODO: we may want to extract/undo DataView, to get back buffers and buffer_paths
       }
-      sendModelValue({
+      getRequestClient().sendModelValue({
         modelId: modelId,
         message: {
           state: changeData,

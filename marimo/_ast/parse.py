@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import io
 import token as token_types
+import warnings
 from pathlib import Path
 from textwrap import dedent
 from tokenize import TokenInfo, tokenize
@@ -45,6 +46,37 @@ V = TypeVar("V")
 U = TypeVar("U")
 
 
+def ast_parse(
+    contents: str, suppress_warnings: bool = True, **kwargs: Any
+) -> ast.Module:
+    if not suppress_warnings:
+        return cast(ast.Module, ast.parse(contents, **kwargs))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=SyntaxWarning)
+        # The SyntaxWarning is suppressed only inside this `with` block
+        return cast(ast.Module, ast.parse(contents, **kwargs))
+
+
+def fixed_dedent(text: str) -> str:
+    """Manually edited code, can dedent"""
+    # Added robustness for AI generated code
+    lines = text.splitlines()
+    for line in lines:
+        if content := line.lstrip():
+            indent = line[: len(line) - len(content)]
+            break
+    else:
+        # Quit early, no clear leading spaces
+        return dedent(text)
+
+    def refill(line: str) -> str:
+        if not line.startswith(indent):
+            return indent + line
+        return line
+
+    return dedent("\n".join(map(refill, lines)))
+
+
 class MarimoFileError(Exception):
     pass
 
@@ -84,10 +116,11 @@ class Extractor:
             ]
         )
 
-    def extract_from_code(self, node: Node) -> str:
+    def extract_from_code(self, node: Node) -> ParseResult[str]:
         # NB. Ast line reference and col index is on a 1-indexed basis.
         lineno = node.lineno
         col_offset = node.col_offset
+        violations: list[Violation] = []
 
         if hasattr(node, "decorator_list"):
             # From the ast, having a decorator list means we are either a
@@ -97,10 +130,26 @@ class Extractor:
             )
 
             # Scrub past the decorator + 1, lineno 1 index -1
-            if (
-                len(node.decorator_list)
-                and (decorator := get_valid_decorator(node))  # type: ignore
+            decorator: Optional[ast.expr]
+            if len(node.decorator_list) and (
+                decorator := get_valid_decorator(node)
             ):
+                # We may have a decorator between cell decorator and function.
+                # This is invalid serialization, but still possible.
+                if len(node.decorator_list) > 1 and is_cell_decorator(
+                    decorator, allowed=("cell",)
+                ):
+                    # We just take the last decorator in this case, which will
+                    # be removed on serialization.
+                    violations.append(
+                        Violation(
+                            "Multiple decorators found, only @app.cell is valid.",
+                            lineno=decorator.lineno,
+                            col_offset=decorator.col_offset,
+                        )
+                    )
+
+                    decorator = node.decorator_list[-1]
                 lineno = _none_to_0(decorator.end_lineno)
                 col_offset = decorator.col_offset - 1
             else:
@@ -112,15 +161,20 @@ class Extractor:
             _none_to_0(node.end_lineno) - 1,
             _none_to_0(node.end_col_offset),
         )
-        return dedent(code)
+        return ParseResult(fixed_dedent(code), violations=violations)
 
-    def to_cell_def(self, node: FnNode, kwargs: dict[str, Any]) -> CellDef:
+    def to_cell_def(
+        self, node: FnNode, kwargs: dict[str, Any]
+    ) -> ParseResult[CellDef]:
         # A general note on the apparent brittleness of this code:
         #    - Ast line reference and col index is on a 1-indexed basis
         #    - Multiline statements need to be accounted for
         #    - Painstaking testing can be found in test/_ast/test_{load, parse}
 
-        function_code = self.extract_from_code(node)
+        function_code_result = self.extract_from_code(node)
+        violations = function_code_result.violations
+        function_code = function_code_result.unwrap()
+
         lineno_offset, col_offset = extract_offsets_post_colon(
             function_code,
             block_start="def",
@@ -164,14 +218,17 @@ class Extractor:
                 # If we are on the same line as the return statement,
                 # just return a blank cell.
                 if start_lineno == node.body[0].lineno:
-                    return CellDef(
-                        code="",
-                        options=kwargs,
-                        lineno=start_lineno,
-                        col_offset=node.col_offset + col_offset,
-                        end_lineno=start_lineno,
-                        end_col_offset=len(self.lines[-1]),
-                        name=getattr(node, "name", DEFAULT_CELL_NAME),
+                    return ParseResult(
+                        CellDef(
+                            code="",
+                            options=kwargs,
+                            lineno=start_lineno,
+                            col_offset=node.col_offset + col_offset,
+                            end_lineno=start_lineno,
+                            end_col_offset=len(self.lines[-1]),
+                            name=getattr(node, "name", DEFAULT_CELL_NAME),
+                        ),
+                        violations=violations,
                     )
                 else:
                     end_lineno = node.body[-1].lineno - 1
@@ -222,39 +279,51 @@ class Extractor:
 
         # Line positioning here is still consequential for correct stack tracing
         # produced in _ast.compiler.
-        return CellDef(
-            code=dedent(cell_code),
-            options=kwargs,
-            lineno=start_lineno - 1,
-            col_offset=node.col_offset + col_offset,
-            end_lineno=_none_to_0(node.end_lineno) + end_lineno,
-            end_col_offset=_none_to_0(node.end_col_offset) + end_col_offset,
-            name=getattr(node, "name", DEFAULT_CELL_NAME),
+        return ParseResult(
+            CellDef(
+                code=fixed_dedent(cell_code),
+                options=kwargs,
+                lineno=start_lineno - 1,
+                col_offset=node.col_offset + col_offset,
+                end_lineno=_none_to_0(node.end_lineno) + end_lineno,
+                end_col_offset=_none_to_0(node.end_col_offset)
+                + end_col_offset,
+                name=getattr(node, "name", DEFAULT_CELL_NAME),
+            ),
+            violations=violations,
         )
 
-    def to_setup_cell(self, node: Node) -> SetupCell:
+    def to_setup_cell(self, node: Node) -> ParseResult[SetupCell]:
         kwargs, _violations = _maybe_kwargs(node.items[0].context_expr)  # type: ignore
-        code = self.extract_from_code(node)
-        code = dedent(code)
+        code_result = self.extract_from_code(node)
+        _violations.extend(code_result.violations)
+        code = fixed_dedent(code_result.unwrap())
         if code.endswith("\npass"):
             code = code[: -len("\npass")]
-        return SetupCell(
-            code=code,
-            options=kwargs,
-            lineno=node.lineno,
-            col_offset=node.col_offset,
-            end_lineno=max(node.lineno, _none_to_0(node.end_lineno)),
-            end_col_offset=_none_to_0(node.end_col_offset),
-            name=SETUP_CELL_NAME,
+        return ParseResult(
+            SetupCell(
+                code=code,
+                options=kwargs,
+                lineno=node.lineno,
+                col_offset=node.col_offset,
+                end_lineno=max(node.lineno, _none_to_0(node.end_lineno)),
+                end_col_offset=_none_to_0(node.end_col_offset),
+                name=SETUP_CELL_NAME,
+            ),
+            violations=_violations,
         )
 
-    def to_cell(self, node: Node, attribute: Optional[str] = None) -> CellDef:
+    def to_cell(
+        self, node: Node, attribute: Optional[str] = None
+    ) -> ParseResult[CellDef]:
         """Convert an AST node to a CellDef."""
+        violations: list[Violation] = []
         if isinstance(
             node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         ):
             decorator = get_valid_decorator(node)
             kwargs, _violations = _maybe_kwargs(decorator)
+            violations.extend(_violations)
             if attribute is None and decorator is not None:
                 if isinstance(decorator, ast.Call):
                     if not hasattr(decorator.func, "attr"):
@@ -270,17 +339,24 @@ class Extractor:
                 assert isinstance(
                     node, (ast.FunctionDef, ast.AsyncFunctionDef)
                 ), "@app.cell cannot be used on classes."
-                return self.to_cell_def(node, kwargs)
+                cell_result = self.to_cell_def(node, kwargs)
+                violations.extend(cell_result.violations)
+                return ParseResult(cell_result.unwrap(), violations=violations)
             cell_types: dict[Optional[str], type[CellDef]] = {
                 "function": FunctionCell,
                 "class_definition": ClassCell,
             }
             cell_type = cell_types.get(attribute, None)
             if cell_type is not None:
-                return cell_type(
-                    code=self.extract_from_code(node),
-                    _ast=node,
-                    options=kwargs,
+                code = self.extract_from_code(node)
+                violations.extend(code.violations)
+                return ParseResult(
+                    cell_type(
+                        code=code.unwrap(),
+                        _ast=node,
+                        options=kwargs,
+                    ),
+                    violations=violations,
                 )
 
             raise MarimoFileError(f"Unsupported cell type. {attribute}")
@@ -288,10 +364,14 @@ class Extractor:
             # These are all captured by is_unparsable_cell
             # but mypy is struggling.
             kwargs, _violations = _eval_kwargs(node.value.keywords)  # type: ignore
-            return UnparsableCell(
-                code=node.value.args[0].value,  # type: ignore
-                options=kwargs,
-                _ast=node,
+            violations.extend(_violations)
+            return ParseResult(
+                UnparsableCell(
+                    code=node.value.args[0].value,  # type: ignore
+                    options=kwargs,
+                    _ast=node,
+                ),
+                violations=violations,
             )
 
         raise MarimoFileError(
@@ -336,13 +416,22 @@ class Parser:
 
     @staticmethod
     def from_file(filename: Union[str, Path]) -> Parser:
-        return Parser(contents=Path(filename).read_text(encoding="utf-8"))
+        return Parser(
+            contents=Path(filename).read_text(encoding="utf-8"),
+            filepath=str(filename),
+        )
 
-    def __init__(self, contents: str):
+    def __init__(self, contents: str, filepath: str = "<marimo>"):
         self.extractor = Extractor(contents=contents)
+        self.filepath = filepath
 
     def node_stack(self) -> PeekStack[Node]:
-        return PeekStack(iter(ast.parse(self.extractor.contents or "").body))
+        tree = ast_parse(
+            self.extractor.contents or "",
+            filename=self.filepath,
+            suppress_warnings=False,
+        )
+        return PeekStack(iter(tree.body))
 
     def parse_header(self, body: PeekStack[Node]) -> ParseResult[Header]:
         # header? = (docstring | comments)*
@@ -385,11 +474,18 @@ class Parser:
         # Attempt to find import statement
         node = body.last
         while node:
-            if is_marimo_import(node):
+            if isinstance(node, ast.Import) and is_marimo_import(node):
+                if node.names[0].asname:
+                    violations.append(
+                        Violation(
+                            MARIMO_ALIAS_VIOLATION,
+                            node.lineno,
+                        )
+                    )
                 return ParseResult(node, violations=violations)
             violations.append(
                 Violation(
-                    "Unexpected statement (expected marimo import)",
+                    UNEXPECTED_STATEMENT_MARIMO_IMPORT_VIOLATION,
                     lineno=node.lineno,
                 )
             )
@@ -399,13 +495,14 @@ class Parser:
     def parse_version(self, body: PeekStack[Node]) -> ParseResult[str]:
         # __generated_with not being correctly set should not break marimo.
         violations: list[Violation] = []
-        node = body.peek()
+        next(body)
+        node = body.last
         version = _maybe_version(node) if node else None
         if not version:
             lineno = node.lineno if node else 0
             violations.append(
                 Violation(
-                    "Expected `__generated_with` assignment for marimo version number.",
+                    EXPECTED_GENERATED_WITH_VIOLATION,
                     lineno=lineno,
                 )
             )
@@ -415,24 +512,25 @@ class Parser:
         return ParseResult(version, violations=violations)
 
     def parse_app(
-        self, body: PeekStack[Node]
+        self, body: PeekStack[Node], import_alias: str = "marimo"
     ) -> ParseResult[AppInstantiation]:
         # app = import marimo + __generated_with + App(kwargs*)
         violations: list[Violation] = []
         node = body.last
         while node:
-            if is_app_def(node):
+            if is_app_def(node, import_alias=import_alias):
                 # type caught by is_app_def
                 _kwargs, _violations = _eval_kwargs(node.value.keywords)  # type: ignore
                 violations.extend(_violations)
                 return ParseResult(
                     AppInstantiation(
                         options=_kwargs,
-                    )
+                    ),
+                    violations=violations,
                 )
             violations.append(
                 Violation(
-                    "Unexpected statement, expected App initialization.",
+                    UNEXPECTED_STATEMENT_APP_INIT_VIOLATION,
                     node.lineno,
                 )
             )
@@ -453,15 +551,17 @@ class Parser:
                 return ParseResult(violations=violations)
             violations.append(
                 Violation(
-                    "Unexpected statement, expected cell definitions.",
+                    UNEXPECTED_STATEMENT_CELL_DEF_VIOLATION,
                     node.lineno,
                 )
             )
 
         if maybe_setup and is_setup_cell(maybe_setup):
             next(body)
+            setup_result = self.extractor.to_setup_cell(maybe_setup)
+            violations.extend(setup_result.violations)
             return ParseResult(
-                self.extractor.to_setup_cell(maybe_setup),
+                setup_result.unwrap(),
                 violations=violations,
             )
         return ParseResult(violations=violations)
@@ -473,13 +573,15 @@ class Parser:
 
         while node := next(body):
             if is_body_cell(node):
-                cells.append(self.extractor.to_cell(node))
+                cell_result = self.extractor.to_cell(node)
+                violations.extend(cell_result.violations)
+                cells.append(cell_result.unwrap())
             elif is_run_guard(node):
                 break
             else:
                 violations.append(
                     Violation(
-                        "Unexpected statement, expected body cell definition.",
+                        UNEXPECTED_STATEMENT_BODY_CELL_VIOLATION,
                         node.lineno,
                     )
                 )
@@ -554,13 +656,27 @@ def _eval_kwargs(
     kwargs = {}
     violations = []
     for kw in keywords:
-        # Only accept Constants
+        # Only accept Constants, or lists of constants
         if kw.arg and isinstance(kw.value, ast.Constant):
             kwargs[kw.arg] = kw.value.value
+        elif kw.arg and isinstance(kw.value, ast.List):
+            list_values = []
+            for elt in kw.value.elts:
+                if isinstance(elt, ast.Constant):
+                    list_values.append(elt.value)
+                else:
+                    violations.append(
+                        Violation(
+                            UNEXPECTED_KEYWORD_VALUE_VIOLATION,
+                            lineno=elt.lineno,
+                            col_offset=elt.col_offset,
+                        )
+                    )
+            kwargs[kw.arg] = list_values
         else:
             violations.append(
                 Violation(
-                    "Unexpected value for keyword argument",
+                    UNEXPECTED_KEYWORD_VALUE_VIOLATION,
                     lineno=kw.lineno,
                     col_offset=kw.col_offset,
                 )
@@ -700,7 +816,7 @@ def get_valid_decorator(
     for decorator in node.decorator_list:
         if (
             isinstance(decorator, ast.Call)
-            and decorator.func.attr in valid_decorators  # type: ignore
+            and getattr(decorator.func, "attr", None) in valid_decorators
         ) or (
             isinstance(decorator, ast.Attribute)
             and decorator.attr in valid_decorators
@@ -709,8 +825,8 @@ def get_valid_decorator(
     return None
 
 
-def is_marimo_import(node: Node) -> bool:
-    return isinstance(node, ast.Import) and node.names[0].name == "marimo"
+def is_marimo_import(node: ast.Import) -> bool:
+    return node.names[0].name == "marimo"
 
 
 def is_string(node: Node) -> bool:
@@ -721,7 +837,7 @@ def is_string(node: Node) -> bool:
     )
 
 
-def is_app_def(node: Node) -> bool:
+def is_app_def(node: Node, import_alias: str = "marimo") -> bool:
     # Expected Ast:
     #
     #    Assign(
@@ -740,7 +856,6 @@ def is_app_def(node: Node) -> bool:
     #        ]
     #      )
     #    )
-
     # A bit obnoxious as a huge conditional, but also better for line coverage.
     return (
         isinstance(node, ast.Assign)
@@ -750,20 +865,24 @@ def is_app_def(node: Node) -> bool:
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Attribute)
         and isinstance(node.value.func.value, ast.Name)
-        and node.value.func.value.id == "marimo"
+        and node.value.func.value.id == import_alias
         and node.value.func.attr == "App"
     )
 
 
-def is_cell_decorator(decorator: ast.expr) -> bool:
+def is_cell_decorator(
+    decorator: ast.expr,
+    *,
+    allowed: tuple[str, ...],
+) -> bool:
     if isinstance(decorator, ast.Attribute):
         return (
             isinstance(decorator.value, ast.Name)
             and decorator.value.id == "app"
-            and decorator.attr in ("cell", "function", "class_definition")
+            and decorator.attr in allowed
         )
     elif isinstance(decorator, ast.Call):
-        return is_cell_decorator(decorator.func)
+        return is_cell_decorator(decorator.func, allowed=allowed)
     return False
 
 
@@ -784,7 +903,9 @@ def is_body_cell(node: Node) -> bool:
     return (
         isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef, ast.ClassDef))
         and (decorator := get_valid_decorator(node))
-        and is_cell_decorator(decorator)
+        and is_cell_decorator(
+            decorator, allowed=("cell", "function", "class_definition")
+        )
     ) or is_unparsable_cell(node)
 
 
@@ -813,12 +934,14 @@ def is_cell(node: Optional[Node]) -> bool:
 
 
 def is_run_guard(node: Optional[Node]) -> bool:
-    basis = ast.parse('if __name__ == "__main__": app.run()').body[0]
+    basis = ast_parse('if __name__ == "__main__": app.run()').body[0]
     return bool(node and is_equal_ast(basis, node))
 
 
-def parse_notebook(contents: str) -> Optional[NotebookSerialization]:
-    parser = Parser(contents)
+def parse_notebook(
+    contents: str, filepath: str = "<marimo>"
+) -> Optional[NotebookSerialization]:
+    parser = Parser(contents, filepath=filepath)
     if not parser.extractor.contents:
         return None
 
@@ -834,10 +957,21 @@ def parse_notebook(contents: str) -> Optional[NotebookSerialization]:
     if not (import_result := parser.parse_import(body)):
         violations.append(
             Violation(
-                "Only able to extract header.",
+                ONLY_HEADER_EXTRACTED_VIOLATION,
                 lineno=1,
             )
         )
+
+        remaining = parser.extractor.contents[len(header.value) :]
+        if remaining.strip():
+            # just a header is fine, anything else we would ignore and override
+            violations.append(
+                Violation(
+                    NON_MARIMO_PYTHON_SCRIPT_VIOLATION,
+                    lineno=header.end_lineno + 2 if header.value else 1,
+                )
+            )
+
         return NotebookSerialization(
             header=Header(
                 lineno=0,
@@ -851,15 +985,25 @@ def parse_notebook(contents: str) -> Optional[NotebookSerialization]:
             cells=[],
             violations=violations,
             valid=False,
+            filename=filepath,
         )
     violations.extend(import_result.violations)
+    # Extract import alias for the reference
+    # Import(names=[alias(name='marimo', asname='mo')])
+    import_alias = "marimo"
+    if import_result:
+        imported_node = import_result.unwrap()
+        if isinstance(imported_node, ast.Import):
+            import_alias = (
+                imported_node.names[0].asname or imported_node.names[0].name
+            )
 
     version = None
     if version_result := parser.parse_version(body):
         version = version_result.unwrap()
     violations.extend(version_result.violations)
 
-    if not (app_result := parser.parse_app(body)):
+    if not (app_result := parser.parse_app(body, import_alias=import_alias)):
         raise MarimoFileError("`marimo.App` definition expected.")
     app = app_result.unwrap()
     violations.extend(app_result.violations)
@@ -876,6 +1020,7 @@ def parse_notebook(contents: str) -> Optional[NotebookSerialization]:
             app=app,
             violations=violations,
             cells=cells,
+            filename=filepath,
         )
 
     body_result = parser.parse_body(body)
@@ -884,7 +1029,7 @@ def parse_notebook(contents: str) -> Optional[NotebookSerialization]:
 
     # Expected a run guard, but that's OK.
     if not is_run_guard(body.last):
-        violations.append(Violation("Expected run guard statement"))
+        violations.append(Violation(EXPECTED_RUN_GUARD_VIOLATION))
 
     return NotebookSerialization(
         header=header,
@@ -892,4 +1037,35 @@ def parse_notebook(contents: str) -> Optional[NotebookSerialization]:
         app=app,
         cells=cells,
         violations=violations,
+        filename=filepath,
+    )
+
+
+# Violation message constants
+MARIMO_ALIAS_VIOLATION = "`marimo` is typically not imported with an alias. "
+UNEXPECTED_STATEMENT_MARIMO_IMPORT_VIOLATION = (
+    "Unexpected statement (expected marimo import)"
+)
+EXPECTED_GENERATED_WITH_VIOLATION = (
+    "Expected `__generated_with` assignment for marimo version number."
+)
+UNEXPECTED_STATEMENT_APP_INIT_VIOLATION = (
+    "Unexpected statement, expected App initialization."
+)
+UNEXPECTED_STATEMENT_CELL_DEF_VIOLATION = (
+    "Unexpected statement, expected cell definitions."
+)
+UNEXPECTED_STATEMENT_BODY_CELL_VIOLATION = (
+    "Unexpected statement, expected body cell definition."
+)
+UNEXPECTED_KEYWORD_VALUE_VIOLATION = "Unexpected value for keyword argument"
+ONLY_HEADER_EXTRACTED_VIOLATION = "Only able to extract header."
+NON_MARIMO_PYTHON_SCRIPT_VIOLATION = "non-marimo Python content beyond header"
+EXPECTED_RUN_GUARD_VIOLATION = "Expected run guard statement"
+
+
+def is_non_marimo_python_script(notebook: NotebookSerialization) -> bool:
+    return any(
+        (v.description == NON_MARIMO_PYTHON_SCRIPT_VIOLATION)
+        for v in notebook.violations
     )

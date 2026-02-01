@@ -3,6 +3,7 @@
 import { python } from "@codemirror/lang-python";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { createStore } from "jotai";
 import {
   afterAll,
   beforeAll,
@@ -12,8 +13,9 @@ import {
   it,
   vi,
 } from "vitest";
-import type { CellHandle } from "@/components/editor/Cell";
-import { CellId } from "@/core/cells/ids";
+import { MockNotebook } from "@/__mocks__/notebook";
+import type { CellHandle } from "@/components/editor/notebook-cell";
+import { CellId, SETUP_CELL_ID } from "@/core/cells/ids";
 import { foldAllBulk, unfoldAllBulk } from "@/core/codemirror/editing/commands";
 import { adaptiveLanguageConfiguration } from "@/core/codemirror/language/extension";
 import { OverridingHotkeyProvider } from "@/core/hotkeys/hotkeys";
@@ -24,7 +26,7 @@ import {
   exportedForTesting,
   flattenTopLevelNotebookCells,
   type NotebookState,
-  SETUP_CELL_ID,
+  notebookAtom,
 } from "../cells";
 import {
   focusAndScrollCellIntoView,
@@ -2094,9 +2096,9 @@ describe("cell reducer", () => {
     `);
   });
 
-  it("can create and update a setup cell", () => {
+  it("can create and noop-update a setup cell", () => {
     // Create the setup cell
-    actions.upsertSetupCell({ code: "# Setup code" });
+    actions.addSetupCellIfDoesntExist({ code: "# Setup code" });
 
     // Check that setup cell was created
     expect(state.cellData[SETUP_CELL_ID].id).toBe(SETUP_CELL_ID);
@@ -2106,17 +2108,17 @@ describe("cell reducer", () => {
     expect(state.cellIds.inOrderIds).toContain(SETUP_CELL_ID);
 
     // Update the setup cell
-    actions.upsertSetupCell({ code: "# Updated setup code" });
+    actions.addSetupCellIfDoesntExist({ code: "# Updated setup code" });
 
-    // Check that the same setup cell was updated, not duplicated
-    expect(state.cellData[SETUP_CELL_ID].code).toBe("# Updated setup code");
+    // Check that the setup cell did not change, since it already exists
+    expect(state.cellData[SETUP_CELL_ID].code).toBe("# Setup code");
     expect(state.cellData[SETUP_CELL_ID].edited).toBe(true);
     expect(state.cellIds.inOrderIds).toContain(SETUP_CELL_ID);
   });
 
   it("can delete and undelete the setup cell", () => {
     // Create the setup cell
-    actions.upsertSetupCell({ code: "# Setup code" });
+    actions.addSetupCellIfDoesntExist({ code: "# Setup code" });
 
     // Check that setup cell was created
     expect(state.cellData[SETUP_CELL_ID].id).toBe(SETUP_CELL_ID);
@@ -2139,6 +2141,24 @@ describe("cell reducer", () => {
     expect(state.cellData[SETUP_CELL_ID].id).toBe(SETUP_CELL_ID);
     expect(state.cellData[SETUP_CELL_ID].name).toBe("setup");
     expect(state.cellData[SETUP_CELL_ID].code).toBe("# Setup code");
+    expect(state.cellData[SETUP_CELL_ID].edited).toBe(true);
+    expect(state.cellIds.inOrderIds).toContain(SETUP_CELL_ID);
+  });
+
+  it("can delete and then create a new setup cell", () => {
+    // Create the setup cell
+    actions.addSetupCellIfDoesntExist({ code: "# Setup code" });
+
+    // Delete the setup cell
+    actions.deleteCell({ cellId: SETUP_CELL_ID });
+
+    // Create a new setup cell
+    actions.addSetupCellIfDoesntExist({ code: "# New code" });
+
+    // Check that the new setup cell was created
+    expect(state.cellData[SETUP_CELL_ID].id).toBe(SETUP_CELL_ID);
+    expect(state.cellData[SETUP_CELL_ID].name).toBe("setup");
+    expect(state.cellData[SETUP_CELL_ID].code).toBe("# New code");
     expect(state.cellData[SETUP_CELL_ID].edited).toBe(true);
     expect(state.cellIds.inOrderIds).toContain(SETUP_CELL_ID);
   });
@@ -2528,6 +2548,54 @@ describe("cell reducer", () => {
       expect(exportedForTesting.isCellCodeHidden(state, newCellId)).toBe(true);
     });
   });
+
+  describe("releaseCellAtoms", () => {
+    it("atom families cache atoms until explicitly removed", () => {
+      const { cellDataAtom, cellRuntimeAtom, cellHandleAtom } =
+        exportedForTesting;
+
+      actions.createNewCell({ cellId: firstCellId, before: false });
+      const newCellId = state.cellIds.inOrderIds[1];
+
+      const dataAtom1 = cellDataAtom(newCellId);
+      const runtimeAtom1 = cellRuntimeAtom(newCellId);
+      const handleAtom1 = cellHandleAtom(newCellId);
+
+      // accesses return cached atoms (same reference)
+      const dataAtom2 = cellDataAtom(newCellId);
+      const runtimeAtom2 = cellRuntimeAtom(newCellId);
+      const handleAtom2 = cellHandleAtom(newCellId);
+
+      expect(dataAtom2).toBe(dataAtom1);
+      expect(runtimeAtom2).toBe(runtimeAtom1);
+      expect(handleAtom2).toBe(handleAtom1);
+    });
+
+    it("cleans up atom family cache when cells are deleted", () => {
+      const { cellDataAtom, cellRuntimeAtom, cellHandleAtom } =
+        exportedForTesting;
+
+      actions.createNewCell({ cellId: firstCellId, before: false });
+      const newCellId = state.cellIds.inOrderIds[1];
+
+      // Access to create cache entries
+      const dataAtom1 = cellDataAtom(newCellId);
+      const runtimeAtom1 = cellRuntimeAtom(newCellId);
+      const handleAtom1 = cellHandleAtom(newCellId);
+
+      // Triggers purge
+      actions.deleteCell({ cellId: newCellId });
+
+      // Access again (should be new instances after cleanup)
+      const dataAtom2 = cellDataAtom(newCellId);
+      const runtimeAtom2 = cellRuntimeAtom(newCellId);
+      const handleAtom2 = cellHandleAtom(newCellId);
+
+      expect(dataAtom2).not.toBe(dataAtom1);
+      expect(runtimeAtom2).not.toBe(runtimeAtom1);
+      expect(handleAtom2).not.toBe(handleAtom1);
+    });
+  });
 });
 
 describe("isCellCodeHidden", () => {
@@ -2612,5 +2680,207 @@ describe("isCellCodeHidden", () => {
     expect(exportedForTesting.isCellCodeHidden(testState, testCellId)).toBe(
       false,
     );
+  });
+});
+
+describe("createTracebackInfoAtom", () => {
+  const store = createStore();
+
+  it("returns undefined when cell has no errors", async () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: {
+            id: "cell1" as CellId,
+            name: "cell1",
+            code: "",
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+
+    expect(traceback).toBeUndefined();
+  });
+
+  it("extracts lineno from syntax errors", async () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: { id: "cell1" as CellId, name: "cell1", code: "x = 1" },
+        },
+        cellRuntime: {
+          cell1: {
+            output: {
+              channel: "marimo-error",
+              data: [{ type: "syntax", msg: "Syntax error", lineno: 5 }],
+              mimetype: "application/vnd.marimo+error",
+            },
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+
+    expect(traceback).toBeDefined();
+    expect(traceback).toHaveLength(1);
+    expect(traceback![0]).toEqual({
+      kind: "cell",
+      cellId: "cell1",
+      lineNumber: 5,
+    });
+  });
+
+  it("handles syntax errors with lineno = 0", async () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: { id: "cell1" as CellId, name: "cell1", code: "x = 1" },
+        },
+        cellRuntime: {
+          cell1: {
+            output: {
+              channel: "marimo-error",
+              data: [{ type: "syntax", msg: "Syntax error", lineno: 0 }],
+              mimetype: "application/vnd.marimo+error",
+            },
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+    expect(traceback).toBeDefined();
+    expect(traceback).toHaveLength(1);
+    expect(traceback![0].lineNumber).toBe(0);
+  });
+
+  it("ignores syntax errors with lineno = null", () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: { id: "cell1" as CellId, name: "cell1", code: "x = 1" },
+        },
+        cellRuntime: {
+          cell1: {
+            output: {
+              channel: "marimo-error",
+              data: [{ type: "syntax", msg: "Syntax error", lineno: null }],
+              mimetype: "application/vnd.marimo+error",
+            },
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+
+    expect(traceback).toBeUndefined();
+  });
+
+  it("handles multiple syntax errors", () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: { id: "cell1" as CellId, name: "cell1", code: "x = 1" },
+        },
+        cellRuntime: {
+          cell1: {
+            output: {
+              channel: "marimo-error",
+              data: [
+                { type: "syntax", msg: "Syntax error", lineno: 3 },
+                { type: "syntax", msg: "Syntax error", lineno: 7 },
+              ],
+              mimetype: "application/vnd.marimo+error",
+            },
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+    expect(traceback).toBeDefined();
+    expect(traceback).toHaveLength(2);
+    expect(traceback![0].lineNumber).toBe(3);
+    expect(traceback![1].lineNumber).toBe(7);
+  });
+
+  it("returns undefined when cell is queued", async () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: { id: "cell1" as CellId, name: "cell1", code: "x = 1" },
+        },
+        cellRuntime: {
+          cell1: {
+            output: {
+              channel: "marimo-error",
+              data: [{ type: "syntax", msg: "Syntax error", lineno: 1 }],
+              mimetype: "application/vnd.marimo+error",
+            },
+            status: "queued",
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+
+    expect(traceback).toBeUndefined();
+  });
+
+  it("returns undefined when cell is running", () => {
+    store.set(
+      notebookAtom,
+      MockNotebook.notebookState({
+        cellData: {
+          cell1: { id: "cell1" as CellId, name: "cell1", code: "x = 1" },
+        },
+        cellRuntime: {
+          cell1: {
+            output: {
+              channel: "marimo-error",
+              data: [{ type: "syntax", msg: "Syntax error", lineno: 1 }],
+              mimetype: "application/vnd.marimo+error",
+            },
+            status: "running",
+          },
+        },
+      }),
+    );
+
+    const tracebackAtom = exportedForTesting.createTracebackInfoAtom(
+      "cell1" as CellId,
+    );
+    const traceback = store.get(tracebackAtom);
+
+    expect(traceback).toBeUndefined();
   });
 });

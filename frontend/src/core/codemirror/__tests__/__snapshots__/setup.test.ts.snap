@@ -45,6 +45,7 @@ exports[`snapshot all duplicate keymaps > default keymaps 2`] = `
     },
     {
       "key": "Backspace",
+      "preventDefault": true,
       "run": "deleteCharBackward",
       "shift": "deleteCharBackward",
     },
@@ -63,21 +64,12 @@ exports[`snapshot all duplicate keymaps > default keymaps 2`] = `
   "Escape": [
     {
       "key": "Escape",
-      "run": "closeCompletionAndPropagate",
-    },
-    {
-      "key": "Escape",
       "run": "simplifySelection",
     },
     {
       "key": "Escape",
       "preventDefault": false,
       "run": "closeFindReplacePanel",
-    },
-    {
-      "key": "Escape",
-      "preventDefault": true,
-      "run": "run",
     },
   ],
   "PageDown": [
@@ -162,6 +154,7 @@ exports[`snapshot all duplicate keymaps > vim keymaps 2`] = `
     },
     {
       "key": "Backspace",
+      "preventDefault": true,
       "run": "deleteCharBackward",
       "shift": "deleteCharBackward",
     },
@@ -177,10 +170,6 @@ exports[`snapshot all duplicate keymaps > vim keymaps 2`] = `
     },
   ],
   "Escape": [
-    {
-      "key": "Escape",
-      "run": "closeCompletionAndPropagate",
-    },
     {
       "key": "Escape",
       "run": "simplifySelection",

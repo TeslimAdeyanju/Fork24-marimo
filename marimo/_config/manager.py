@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from abc import abstractmethod
-from functools import cached_property
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Any, Optional, Union, cast
 
@@ -11,6 +11,7 @@ from marimo import _loggers
 from marimo._config.config import (
     DEFAULT_CONFIG,
     CompletionConfig,
+    ExperimentalConfigType,
     ExportType,
     LanguageServersConfig,
     MarimoConfig,
@@ -28,6 +29,7 @@ from marimo._config.reader import (
     get_marimo_config_from_pyproject_dict,
     read_marimo_config,
     read_pyproject_marimo_config,
+    sanitize_pyproject_dict,
 )
 from marimo._config.secrets import (
     mask_secrets,
@@ -37,6 +39,7 @@ from marimo._config.secrets import (
 from marimo._config.utils import (
     get_or_create_user_config_path,
 )
+from marimo._utils.env import env_to_value
 
 LOGGER = _loggers.marimo_logger()
 
@@ -61,6 +64,7 @@ def get_default_config_manager(
         UserConfigManager(),
         ProjectConfigManager(current_path),
         ScriptConfigManager(current_path),
+        EnvConfigManager(),
     )
 
 
@@ -107,7 +111,7 @@ class MarimoConfigReader:
         return {}
 
     @property
-    def experimental(self) -> dict[str, Any]:
+    def experimental(self) -> ExperimentalConfigType:
         if "experimental" in self._config:
             return self._config["experimental"]
         return {}
@@ -179,6 +183,10 @@ class ProjectConfigManager(PartialMarimoConfigReader):
     def __init__(self, start_path: str) -> None:
         self.pyproject_path = find_nearest_pyproject_toml(start_path)
 
+    # It is safe to cache this config, as we only read from the pyproject.toml
+    # and never update it. If the user updates the pyproject.toml,
+    # it is ok to expect updates to be reflected after a server restart.
+    @lru_cache(maxsize=2)  # noqa: B019
     def get_config(self, *, hide_secrets: bool = True) -> PartialMarimoConfig:
         try:
             if self.pyproject_path is None:
@@ -291,6 +299,38 @@ class ProjectConfigManager(PartialMarimoConfigReader):
         }
 
 
+class EnvConfigManager(PartialMarimoConfigReader):
+    def _maybe_override_from_env(
+        self, key: str, path: list[str], config: PartialMarimoConfig
+    ) -> None:
+        loaded_value = env_to_value(key)
+        if not isinstance(loaded_value, tuple):
+            return None
+        value = loaded_value[0]
+
+        current = cast(dict[str, Any], config)
+        for p in path[:-1]:
+            if p not in current or not isinstance(current[p], dict):
+                current[p] = {}
+            current = current[p]
+        current[path[-1]] = value
+        return None
+
+    def get_config(self, *, hide_secrets: bool = True) -> PartialMarimoConfig:
+        """Get the configuration, as a partial configuration"""
+        project_config: PartialMarimoConfig = {}
+        # We could do this dynamically, but list explicitly for now to reduce
+        # surface area
+        self._maybe_override_from_env(
+            "_MARIMO_CONFIG_OVERLOAD_RUNTIME_AUTO_INSTANTIATE",
+            ["runtime", "auto_instantiate"],
+            project_config,
+        )
+        if hide_secrets:
+            return mask_secrets_partial(project_config)
+        return project_config
+
+
 class ScriptConfigManager(PartialMarimoConfigReader):
     """Read the script configuration following PEP 723
 
@@ -301,6 +341,10 @@ class ScriptConfigManager(PartialMarimoConfigReader):
     def __init__(self, filename: Optional[str]) -> None:
         self.filename = filename
 
+    # It is safe to cache this config, as we only read from the script
+    # and never update it. If the user updates the script,
+    # it is ok to expect updates to be reflected after a server restart.
+    @lru_cache(maxsize=2)  # noqa: B019
     def get_config(self, *, hide_secrets: bool = True) -> PartialMarimoConfig:
         if self.filename is None:
             return {}
@@ -315,6 +359,11 @@ class ScriptConfigManager(PartialMarimoConfigReader):
             script_config = read_pyproject_from_script(script_content)
             if script_config is None:
                 return {}
+
+            script_config = sanitize_pyproject_dict(
+                script_config,
+                (("tool", "marimo", "runtime", "auto_instantiate"),),
+            )
 
             marimo_config = get_marimo_config_from_pyproject_dict(
                 script_config

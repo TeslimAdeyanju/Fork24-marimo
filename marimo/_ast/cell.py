@@ -6,11 +6,16 @@ import dataclasses
 import inspect
 import os
 from collections.abc import Awaitable, Mapping
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+import msgspec
+
 from marimo import _loggers
-from marimo._ast.sql_visitor import SQLVisitor
+from marimo._ast.parse import ast_parse
+from marimo._ast.sql_visitor import SQLRef, SQLVisitor
 from marimo._ast.visitor import ImportData, Language, Name, VariableData
+from marimo._messaging.msgspec_encoder import asdict
 from marimo._runtime.exceptions import MarimoRuntimeException
 from marimo._types.ids import CellId_t
 from marimo._utils.deep_merge import deep_merge
@@ -26,8 +31,8 @@ if TYPE_CHECKING:
     from marimo._output.hypertext import Html
 
 
-@dataclasses.dataclass
-class CellConfig:
+# TODO: Use rename="camel" for consistency in JSON-encoding
+class CellConfig(msgspec.Struct):
     """
     Internal representation of a cell's configuration.
     This is not part of the public API.
@@ -54,7 +59,7 @@ class CellConfig:
         return config
 
     def asdict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        return asdict(self)
 
     def asdict_without_defaults(self) -> dict[str, Any]:
         return {
@@ -72,16 +77,14 @@ class CellConfig:
         `update` can be a partial config or a CellConfig
         """
         if isinstance(update, CellConfig):
-            update = dataclasses.asdict(update)
-        new_config = dataclasses.asdict(
-            CellConfig.from_dict(deep_merge(dataclasses.asdict(self), update))
-        )
-        for key, value in new_config.items():
+            update = asdict(update)
+        new_config = CellConfig.from_dict(deep_merge(self.asdict(), update))
+        for key, value in new_config.asdict().items():
             self.__setattr__(key, value)
 
 
 CellConfigKeys = frozenset(
-    {field.name for field in dataclasses.fields(CellConfig)}
+    {field.name for field in msgspec.structs.fields(CellConfig)}
 )
 
 
@@ -119,6 +122,7 @@ RunResultStatusType = Literal[
 @dataclasses.dataclass
 class RunResultStatus:
     state: Optional[RunResultStatusType] = None
+    exception: Optional[Exception] = None
 
 
 @dataclasses.dataclass
@@ -147,11 +151,6 @@ class CellOutput:
     output: Any = None
 
 
-@dataclasses.dataclass
-class ParsedSQLStatements:
-    parsed: Optional[list[str]] = None
-
-
 @dataclasses.dataclass(frozen=True)
 class CellImpl:
     # hash of code
@@ -160,6 +159,8 @@ class CellImpl:
     mod: ast.Module
     defs: set[Name]
     refs: set[Name]
+    # metadata about refs, currently only tracks SQL refs
+    sql_refs: dict[Name, SQLRef]
     # Variables that should only live for the duration of the cell
     temporaries: set[Name]
 
@@ -172,6 +173,9 @@ class CellImpl:
     language: Language
     # unique id
     cell_id: CellId_t
+
+    # Markdown content of the cell if it exists
+    markdown: Optional[str] = None
 
     # Mutable fields
     # explicit configuration of cell
@@ -189,13 +193,6 @@ class CellImpl:
     _stale: CellStaleState = dataclasses.field(default_factory=CellStaleState)
     # cells can optionally hold a reference to their output
     _output: CellOutput = dataclasses.field(default_factory=CellOutput)
-    # parsed sql statements
-    _sqls: ParsedSQLStatements = dataclasses.field(
-        default_factory=ParsedSQLStatements
-    )
-    _raw_sqls: ParsedSQLStatements = dataclasses.field(
-        default_factory=ParsedSQLStatements
-    )
     # Whether this cell can be executed as a test cell.
     _test: bool = False
 
@@ -228,36 +225,28 @@ class CellImpl:
     def _get_sqls(self, raw: bool = False) -> list[str]:
         try:
             visitor = SQLVisitor(raw=raw)
-            visitor.visit(ast.parse(self.code))
+            visitor.visit(ast_parse(self.code))
             return visitor.get_sqls()
         except Exception:
             return []
 
-    @property
+    @cached_property
     def sqls(self) -> list[str]:
         """Returns parsed SQL statements from this cell.
 
         Returns:
             list[str]: List of SQL statement strings parsed from the cell code.
         """
-        if self._sqls.parsed is not None:
-            return self._sqls.parsed
+        return self._get_sqls()
 
-        self._sqls.parsed = self._get_sqls()
-        return self._sqls.parsed
-
-    @property
+    @cached_property
     def raw_sqls(self) -> list[str]:
         """Returns unparsed SQL statements from this cell.
 
         Returns:
             list[str]: List of SQL statements verbatim from the cell code.
         """
-        if self._raw_sqls.parsed is not None:
-            return self._raw_sqls.parsed
-
-        self._raw_sqls.parsed = self._get_sqls(raw=True)
-        return self._raw_sqls.parsed
+        return self._get_sqls(raw=True)
 
     @property
     def stale(self) -> bool:
@@ -270,7 +259,7 @@ class CellImpl:
     @property
     def imports(self) -> Iterable[ImportData]:
         """Return a set of import data for this cell."""
-        import_data = []
+        import_data: list[ImportData] = []
         for data in self.variable_data.values():
             import_data.extend(
                 [
@@ -309,7 +298,7 @@ class CellImpl:
     def toplevel_variable(self) -> Optional[VariableData]:
         """Return the single, scoped, toplevel variable defined if found."""
         try:
-            tree = ast.parse(self.code)
+            tree = ast_parse(self.code)
         except SyntaxError:
             return None
 
@@ -366,9 +355,12 @@ class CellImpl:
         )
 
     def set_run_result_status(
-        self, run_result_status: RunResultStatusType
+        self,
+        run_result_status: RunResultStatusType,
+        exception: Exception | None = None,
     ) -> None:
         self._run_result_status.state = run_result_status
+        self._run_result_status.exception = exception
 
     def set_stale(
         self, stale: bool, stream: Stream | None = None, broadcast: bool = True
@@ -387,6 +379,10 @@ class CellImpl:
     @property
     def output(self) -> Any:
         return self._output.output
+
+    @property
+    def exception(self) -> Exception | None:
+        return self._run_result_status.exception
 
 
 @dataclasses.dataclass
@@ -555,14 +551,14 @@ class Cell:
 
 
             @app.cell
-            def __():
+            def _():
                 import marimo as mo
 
                 return (mo,)
 
 
             @app.cell
-            def __():
+            def _():
                 x = 0
                 y = 1
                 return (x, y)

@@ -16,6 +16,7 @@ from marimo._messaging.cell_output import CellChannel
 from marimo._messaging.errors import (
     MarimoExceptionRaisedError,
     MarimoInterruptionError,
+    MarimoSQLError,
     MarimoStrictExecutionError,
 )
 from marimo._messaging.ops import (
@@ -92,7 +93,17 @@ def _set_run_result_status(
     elif runner.cancelled(cell.cell_id):
         cell.set_run_result_status("cancelled")
     elif run_result.exception is not None:
-        cell.set_run_result_status("exception")
+        cell.set_run_result_status(
+            "exception",
+            (
+                # TODO(akshayka): "run_result.exception" can unfortunately
+                # hold things that are not exceptions; remove this check
+                # if/when that is ever cleaned up.
+                run_result.exception
+                if isinstance(run_result.exception, Exception)
+                else None
+            ),
+        )
     else:
         cell.set_run_result_status("success")
 
@@ -109,7 +120,7 @@ def _broadcast_variables(
 
     del run_result
     values = [
-        VariableValue(
+        VariableValue.create(
             name=variable,
             value=(
                 runner.glbls[variable] if variable in runner.glbls else None
@@ -333,6 +344,13 @@ def _broadcast_outputs(
             clear_console=False,
             cell_id=cell.cell_id,
         )
+    elif isinstance(run_result.exception, MarimoSQLError):
+        LOGGER.debug("Cell %s raised a SQL error", cell.cell_id)
+        CellOp.broadcast_error(
+            data=[run_result.exception],
+            clear_console=True,
+            cell_id=cell.cell_id,
+        )
     elif run_result.exception is not None:
         LOGGER.debug(
             "Cell %s raised %s",
@@ -367,7 +385,7 @@ def render_toplevel_defs(
     del run_result
     variable = cell.toplevel_variable
     if variable is not None:
-        extractor = TopLevelExtraction.from_graph(cell, runner.graph)
+        extractor = TopLevelExtraction.from_graph(runner.graph, cell=cell)
         serialization = list(iter(extractor))[-1]
         CellOp.broadcast_serialization(
             serialization=serialization,

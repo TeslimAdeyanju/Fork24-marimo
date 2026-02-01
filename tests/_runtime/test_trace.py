@@ -1,4 +1,6 @@
 # Copyright 2024 Marimo. All rights reserved.
+from __future__ import annotations
+
 import os
 import re
 import subprocess
@@ -9,6 +11,8 @@ from marimo._runtime.requests import (
     ExecutionRequest,
 )
 from marimo._runtime.runtime import Kernel
+from marimo._utils import async_path
+from tests._messaging.mocks import MockStderr, MockStream
 
 
 class TestScriptTrace:
@@ -23,7 +27,7 @@ class TestScriptTrace:
         result = p.stderr.decode()
         assert "ZeroDivisionError: division by zero" in result
         assert ('fn_exception.py", line 14') in result
-        assert ('fn_exception.py", line 26') in result
+        assert ('fn_exception.py", line 25') in result
         assert "bad_divide(0, x)" in result
         assert "y / x" in result
         # Test col_offset
@@ -73,7 +77,7 @@ class TestScriptTrace:
 
         result = p.stderr.decode()
         assert "ZeroDivisionError: division by zero" in result
-        assert ('script_exception_with_output.py", line 11') in result
+        assert ('script_exception_with_output.py", line 17') in result
         assert "y / x" in result
 
     @staticmethod
@@ -161,8 +165,9 @@ class TestAppTrace:
         )
 
         # Naively strip tags to check trace
+        stderr_messages = MockStderr(k.stderr)
         tag_re = re.compile(r"(<!--.*?-->|<[^>]*>)")
-        result = k.stderr.messages[-1]
+        result = stderr_messages.messages[-1]
         result = tag_re.sub("", result)
 
         assert "ZeroDivisionError: division by zero" in result
@@ -242,7 +247,7 @@ class TestAppTrace:
                         """
                     try:
                         R = R # Causes error since no def
-                        C = 0 # Unaccessible
+                        C = 0 # Inaccessible
                     except:
                         pass
                     """
@@ -258,24 +263,29 @@ class TestAppTrace:
                 ),
             ]
         )
+
         # Runtime error expected- since not a kernel error check stderr
+
+        stream_messages = MockStream(k.stream)
+        stderr_messages = MockStderr(k.stderr)
+
         assert "C" not in k.globals
         if k.execution_type == "strict":
             assert (
                 "name `R` is referenced before definition."
-                in k.stream.messages[-4][1]["output"]["data"][0]["msg"]
+                in stream_messages.operations[-4]["output"]["data"][0]["msg"]
             )
             assert (
                 "This cell wasn't run"
-                in k.stream.messages[-1][1]["output"]["data"][0]["msg"]
+                in stream_messages.operations[-1]["output"]["data"][0]["msg"]
             )
         else:
             assert (
-                "marimo came across the undefined variable `C` during runtime."
-                in k.stream.messages[-2][1]["output"]["data"][0]["msg"]
+                "Name `C` is not defined."
+                in stream_messages.operations[-2]["output"]["data"][0]["msg"]
             )
-            assert "NameError" in k.stderr.messages[0]
-            assert "NameError" in k.stderr.messages[-1]
+            assert "NameError" in stderr_messages.messages[0]
+            assert "NameError" in stderr_messages.messages[-1]
 
 
 class TestEmbedTrace:
@@ -305,10 +315,10 @@ class TestEmbedTrace:
         result = tag_re.sub("", result)
 
         # windows support
-        file_path = os.path.normpath(
+        file_path = await async_path.normpath(
             "tests/_runtime/script_data/script_exception_with_output.py"
         )
 
         assert "ZeroDivisionError: division by zero" in result
-        assert (file_path + "&quot;, line 11") in result
+        assert (file_path + "&quot;, line 17") in result
         assert "y / x" in result

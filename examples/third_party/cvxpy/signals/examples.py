@@ -1,24 +1,30 @@
 import marimo
 
-__generated_with = "0.0.1a0"
+__generated_with = "0.17.4"
 app = marimo.App()
 
 
 @app.cell
-def __(mo):
-    mo.md("# Examples")
+def _(mo):
+    mo.md("""
+    # Examples
+    """)
     return
 
 
 @app.cell
 def _(mo):
-    mo.md("## Real Data")
+    mo.md("""
+    ## Real Data
+    """)
     return
 
 
 @app.cell
 def _(mo):
-    mo.md("### NOAA CO2")
+    mo.md("""
+    ### NOAA CO2
+    """)
     return
 
 
@@ -30,7 +36,7 @@ def _(dataloaders, mo, plt):
     co2_df.plot(y="average", x="decimal", ax=plt.gca())
     plt.tight_layout()
     mo.tree([co2_df.head(2), plt.gca()], label="data")
-    return co2_df,
+    return (co2_df,)
 
 
 @app.cell
@@ -40,7 +46,7 @@ def _(co2_df, mo, solutions):
     mo.tree(
         [co2_problem.plot_decomposition(figsize=(6, 5))], label="decomposition"
     )
-    return co2_problem,
+    return (co2_problem,)
 
 
 @app.cell
@@ -56,7 +62,9 @@ def _(co2_df, co2_problem, mo, plt):
 
 @app.cell
 def _(mo):
-    mo.md("### Solar power generation")
+    mo.md("""
+    ### Solar power generation
+    """)
     return
 
 
@@ -72,7 +80,7 @@ def _(dataloaders, mo, plt):
         ],
         label="data",
     )
-    return pv_df,
+    return (pv_df,)
 
 
 @app.cell
@@ -83,18 +91,22 @@ def _(mo, pv_df, solutions):
         [pv_problem.plot_decomposition(exponentiate=True, figsize=(6, 5))],
         label="decomposition",
     )
-    return pv_problem,
-
-
-@app.cell
-def _(mo):
-    mo.md("## Synthetic Data")
     return
 
 
 @app.cell
 def _(mo):
-    mo.md("### Basic changepoint detection")
+    mo.md("""
+    ## Synthetic Data
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ### Basic changepoint detection
+    """)
     return
 
 
@@ -111,7 +123,9 @@ def _(dataloaders, mo, plt):
 
 @app.cell
 def _(mo):
-    mo.md("**Exact, nonconvex version**")
+    mo.md("""
+    **Exact, nonconvex version**
+    """)
     return
 
 
@@ -127,12 +141,14 @@ def _(bcd_X_real, bcd_y, mo, solutions):
         ],
         label="decomposition",
     )
-    return bcd_problem_ncvx,
+    return
 
 
 @app.cell
 def _(mo):
-    mo.md("**Heuristic, convex version**")
+    mo.md("""
+    **Heuristic, convex version**
+    """)
     return
 
 
@@ -144,12 +160,14 @@ def _(bcd_X_real, bcd_y, mo, solutions):
         [bcd_problem.plot_decomposition(X_real=bcd_X_real, figsize=(6, 5))],
         "decomposition",
     )
-    return bcd_problem,
+    return
 
 
 @app.cell
 def _(mo):
-    mo.md("### Harder changepoint detection")
+    mo.md("""
+    ### Harder changepoint detection
+    """)
     return
 
 
@@ -175,12 +193,14 @@ def _(hcd_X_real, hcd_y, mo, solutions):
         [hcd_problem.plot_decomposition(X_real=hcd_X_real, figsize=(6, 5))],
         "decomposition",
     )
-    return hcd_problem,
+    return
 
 
 @app.cell
 def _(mo):
-    mo.md("### Synthetic soiling data")
+    mo.md("""
+    ### Synthetic soiling data
+    """)
     return
 
 
@@ -200,7 +220,7 @@ def _(dataloaders, mo, plt):
     plt.legend(loc=3)
     plt.title(_name)
     mo.tree([plt.gca()], label="data")
-    return ss_df,
+    return (ss_df,)
 
 
 @app.cell
@@ -212,24 +232,24 @@ def _(mo, np, plt, solutions, ss_df):
     _fig.axes[1].set_ylim(_avg - 2.5, _avg + 2.5)
     plt.tight_layout()
     mo.tree([plt.gca()], "decomposition")
-    return ss_problem,
+    return
 
 
 @app.cell
-def __():
+def _():
     import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
 
     import modules.dataloaders as dataloaders
     import modules.solutions as solutions
-    return dataloaders, np, pd, plt, solutions
+    return dataloaders, np, plt, solutions
 
 
 @app.cell
 def _():
     import marimo as mo
-    return mo,
+    return (mo,)
 
 
 if __name__ == "__main__":

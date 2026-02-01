@@ -1,10 +1,9 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
-import type { LanguageServerPlugin } from "@marimo-team/codemirror-languageserver";
 import type * as LSP from "vscode-languageserver-protocol";
 import { Objects } from "@/utils/objects";
 import type { ILanguageServerClient } from "./types";
-import { getLSPDocument } from "./utils.ts";
+import { getLSPDocument } from "./utils";
 
 function removeFalseyValues<T extends object>(obj: T): T {
   return Objects.filter(obj, (value) => value !== false && value !== null) as T;
@@ -22,6 +21,26 @@ export class FederatedLanguageServerClient implements ILanguageServerClient {
   constructor(clients: ILanguageServerClient[]) {
     this.clients = clients;
     this.documentUri = getLSPDocument();
+  }
+
+  onNotification(
+    listener: (n: {
+      jsonrpc: "2.0";
+      id?: null | undefined;
+      method: "textDocument/publishDiagnostics";
+      params: LSP.PublishDiagnosticsParams;
+    }) => void,
+  ): () => boolean {
+    const callbacks: (() => boolean)[] = [];
+    for (const client of this.clients) {
+      callbacks.push(client.onNotification(listener));
+    }
+    return () => {
+      for (const cb of callbacks) {
+        cb();
+      }
+      return true;
+    };
   }
 
   get clientCapabilities(): LSP.ClientCapabilities | undefined {
@@ -115,7 +134,7 @@ export class FederatedLanguageServerClient implements ILanguageServerClient {
 
   async textDocumentCodeAction(
     params: LSP.CodeActionParams,
-  ): Promise<Array<LSP.Command | LSP.CodeAction> | null> {
+  ): Promise<(LSP.Command | LSP.CodeAction)[] | null> {
     const client = this.firstWithCapability("codeActionProvider");
     if (client) {
       return client.textDocumentCodeAction(params);
@@ -151,14 +170,6 @@ export class FederatedLanguageServerClient implements ILanguageServerClient {
       return client.textDocumentSignatureHelp(params);
     }
     return null;
-  }
-
-  attachPlugin(plugin: LanguageServerPlugin): void {
-    this.clients.forEach((client) => client.attachPlugin(plugin));
-  }
-
-  detachPlugin(plugin: LanguageServerPlugin): void {
-    this.clients.forEach((client) => client.detachPlugin(plugin));
   }
 
   // Merge completions from all clients
@@ -206,9 +217,9 @@ export class FederatedLanguageServerClient implements ILanguageServerClient {
 }
 
 function mergeCompletions(
-  results: Array<
-    PromiseSettledResult<LSP.CompletionList | LSP.CompletionItem[] | null>
-  >,
+  results: PromiseSettledResult<
+    LSP.CompletionList | LSP.CompletionItem[] | null
+  >[],
 ): LSP.CompletionList {
   const completions: LSP.CompletionItem[] = [];
   let isIncomplete = false;

@@ -10,14 +10,18 @@ from marimo._server.models.completion import (
     SchemaTable,
     VariableContext,
 )
+from marimo._types.ids import SessionId
 
-FILL_ME_TAG = "<FILL_ME>"
+FIM_PREFIX_TAG = "<|fim_prefix|>"
+FIM_SUFFIX_TAG = "<|fim_suffix|>"
+FIM_MIDDLE_TAG = "<|fim_middle|>"
 
-language_rules = {
+LANGUAGES: list[Language] = ["python", "sql", "markdown"]
+language_rules: dict[Language, list[str]] = {
     "python": [
         "For matplotlib: use plt.gca() as the last expression instead of plt.show().",
         "For plotly: return the figure object directly.",
-        "For altair: return the chart object directly. Add tooltips where appropriate.",
+        "For altair: return the chart object directly. Add tooltips where appropriate. You can pass polars dataframes directly to altair (e.g., alt.Chart(df)).",
         "Include proper labels, titles, and color schemes.",
         "Make visualizations interactive where appropriate.",
         "If an import already exists, do not import it again.",
@@ -27,6 +31,15 @@ language_rules = {
     "sql": [
         "The SQL must use duckdb syntax.",
     ],
+}
+
+
+language_rules_multiple_cells: dict[Language, list[str]] = {
+    "sql": [
+        'SQL cells start with df = mo.sql(f"""<your query>""") for DuckDB, or df = mo.sql(f"""<your query>""", engine=engine) for other SQL engines. You should always write queries inline as the code snippet above, do not use variables to store queries.',
+        "This will automatically display the result in the UI. You do not need to return the dataframe in the cell.",
+        "The SQL must use the syntax of the database engine specified in the `engine` variable. If no engine, then use duckdb syntax.",
+    ]
 }
 
 
@@ -45,6 +58,12 @@ def _format_schema_info(tables: Optional[list[SchemaTable]]) -> str:
                 samples = ", ".join(f"{v}" for v in col.sample_values)
                 schema_info += f"    - Sample values: {samples}\n"
     return schema_info
+
+
+def _format_plain_text(plain_text: str) -> str:
+    if not plain_text.strip():
+        return ""
+    return f"If the prompt mentions @kind://name, use the following context to help you answer the question:\n\n{plain_text}"
 
 
 def _format_variables(
@@ -78,6 +97,7 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
     *,
     language: Language,
     is_insert: bool,
+    support_multiple_cells: bool,
     custom_rules: Optional[str],
     cell_code: Optional[str],
     selected_text: Optional[str],
@@ -86,14 +106,29 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
 ) -> str:
     if cell_code:
         system_prompt = f"Here's a {language} document from a Python notebook that I'm going to ask you to make an edit to.\n\n"
+    elif support_multiple_cells:
+        system_prompt = (
+            "You are an AI assistant integrated into the marimo notebook code editor.\n"
+            "Your goal is to create new cells in the notebook.\n"
+            "You can create multiple cells with different languages. Each cell should be wrapped in backticks.\n"
+            "The user may reference additional context in the form @kind://name. You can use this context to help you with the current task.\n"
+            "You can reference variables from other cells, but you cannot redefine a variable if it already exists.\n"
+            "Immediately start with the following format. Do NOT comment on the code, just output the code itself: \n\n"
+            "```python\n{PYTHON_CODE}\n```\n\n"
+            '```sql\ndf_name = mo.sql(f"""{SQL_QUERY}""")\n```\n\n'
+            '```markdown\nmo.md(f"""{MARKDOWN_CONTENT}""")\n```\n\n'
+            "You can have multiple cells of any type. Each cell is wrapped in backticks with the appropriate language identifier.\n"
+            "Create clear variable names if they will be used in other cells. Do not prefix with underscore.\n"
+            "Separate logic into multiple cells to keep the code organized and readable."
+        )
     else:
         system_prompt = (
             "You are an AI assistant integrated into the marimo notebook code editor.\n"
             "You goal is to create a new cell in the notebook.\n"
             f"Your output must be valid {language} code.\n"
-            "You can use the provided context to help you write the new cell.\n"
+            "The user may reference additional context in the form @kind://name. You can use this context to help you with the current task.\n"
             "You can reference variables from other cells, but you cannot redefine a variable if it already exists.\n"
-            "Immediately start with the following format with no remarks. \n\n"
+            "Immediately start with the following format. Do NOT comment on the code, just output the code itself: \n\n"
             "```\n{CELL_CODE}\n```"
         )
 
@@ -121,7 +156,7 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
                 "<insert_here></insert_here> tags. Don't include the insert_here tags in your output.\n"
                 "Match the indentation in the original file in the inserted content, "
                 "don't include any indentation on blank lines.\n"
-                "Immediately start with the following format with no remarks:\n\n"
+                "Immediately start with the following format. Do NOT comment on the code, just output the code itself:\n\n"
                 "```\n{INSERTED_CODE}\n```"
             )
         else:
@@ -131,7 +166,7 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
                 "Start at the indentation level in the original file in the rewritten content. "
                 "Don't stop until you've rewritten the entire section, even if you have no more changes to make, "
                 "always write out the whole section with no unnecessary elisions.\n"
-                "Immediately start with the following format with no remarks:\n\n"
+                "Immediately start with the following format. Do NOT comment on the code, just output the code itself:\n\n"
                 "```\n{REWRITTEN_CODE}\n```"
             )
 
@@ -139,7 +174,17 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
         system_prompt += "\n\nAnd here's the section to rewrite based on that prompt again for reference:\n\n"
         system_prompt += _tag("rewrite_this", selected_text)
 
-    if language in language_rules and language_rules[language]:
+    if support_multiple_cells:
+        # Add all language rules for multi-cell scenarios
+        for lang in LANGUAGES:
+            language_rule = language_rules_multiple_cells.get(
+                lang, language_rules.get(lang, [])
+            )
+            if language_rule:
+                system_prompt += (
+                    f"\n\n## Rules for {lang}:\n{_rules(language_rule)}"
+                )
+    elif language in language_rules and language_rules[language]:
         system_prompt += (
             f"\n\n## Rules for {language}\n{_rules(language_rules[language])}"
         )
@@ -148,6 +193,7 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
         system_prompt += f"\n\n## Additional rules:\n{custom_rules}"
 
     if context:
+        system_prompt += _format_plain_text(context.plain_text)
         system_prompt += _format_variables(context.variables)
         system_prompt += _format_schema_info(context.schema)
 
@@ -156,13 +202,19 @@ def get_refactor_or_insert_notebook_cell_system_prompt(
             "code_from_other_cells", other_cell_codes
         )
 
+    if support_multiple_cells:
+        system_prompt += "\n\nAgain, just output code wrapped in cells. Each cell is wrapped in backticks with the appropriate language identifier (python, sql, markdown)."
+    else:
+        system_prompt += f"\n\nAgain, just output the code itself and make sure to return the code as just {language}."
+
     return system_prompt
 
 
 def get_inline_system_prompt(*, language: Language) -> str:
     return (
-        f"You are a {language} programmer that replaces {FILL_ME_TAG} part with the right code. "
-        f"Only output the code that replaces {FILL_ME_TAG} part. Do not add any explanation or markdown."
+        f"You are a {language} code completion assistant. "
+        f"Complete the missing code between the prefix and suffix while maintaining proper syntax, style, and functionality."
+        f"Only output the code that goes after the {FIM_SUFFIX_TAG} part. Do not add any explanation or markdown."
     )
 
 
@@ -192,6 +244,30 @@ def _get_mode_intro_message(mode: CopilotMode) -> str:
             "- All tool use is strictly read-only. You may not perform write, edit, or execution actions.\n"
             "- You must always explain to the user why you are using a tool before invoking it.\n"
         )
+    elif mode == "agent":
+        return (
+            f"{base_intro}"
+            "You are in agent mode - you have autonomy to resolve the user's query by using the tools provided. Please keep going until the user's query is completely resolved, before ending your turn and yielding back to the user. Only terminate your turn when you are sure that the problem is solved. \n"
+            "\n\n## Agent Mode\n"
+            "- You are encouraged to edit existing cells in the notebook or add new cells.\n"
+            "- You should do the following things after editing the notebook:\n"
+            "\t 1. Use the lint notebook tool to check for errors and lint issues\n"
+            "\t 2. Run stale cells tool to run the code\n"
+            "\t 3. If there are errors in cells you have added, edit the existing cell. Don't add new cells to correct errors.\n"
+            "- If you say you're about to do something, actually do it in the same turn (run the tool call right after).\n"
+            "- Group code into logical cells, eg. functions should be in separate cells and all the calls will be in one cell. When asked for explanations or summaries, use markdown cells with proper formatting.\n\n"
+            "## Capabilities\n"
+            "- You can use a set of read and write tools to gather additional context from the notebook or environment (e.g., searching code, summarizing data, or reading documentation) and to modify the notebook (e.g., adding cells, editing cells, deleting cells).\n"
+            "## Limitations\n"
+            "- You must always explain to the user why you are using a tool before invoking it.\n"
+        )
+
+
+def _get_session_info(session_id: SessionId) -> str:
+    return (
+        f"Current notebook session ID: {session_id}. "
+        "Use this session_id with tools that require it."
+    )
 
 
 def get_chat_system_prompt(
@@ -200,9 +276,11 @@ def get_chat_system_prompt(
     context: Optional[AiCompletionContext],
     include_other_code: str,
     mode: CopilotMode,
+    session_id: SessionId,
 ) -> str:
     system_prompt: str = f"""
 {_get_mode_intro_message(mode)}
+{_get_session_info(session_id)}
 
 Your goal is to do one of the following two things:
 
@@ -210,6 +288,8 @@ Your goal is to do one of the following two things:
 2. Answer general-purpose questions unrelated to their particular notebook.
 
 It will be up to you to decide which of these you are doing based on what the user has told you. When unclear, ask clarifying questions to understand the user's intent before proceeding.
+
+The user may reference additional context in the form @kind://name. You can use this context to help you with the current task.
 
 You can respond with markdown, code, or a combination of both. You only work with two languages: Python and SQL.
 When responding in code, think of each block of code as a separate cell in the notebook.
@@ -235,6 +315,14 @@ Marimo's reactivity means:
 - You cannot access a UI element's value in the same cell where it's defined
 
 ## Best Practices
+
+<data_handling>
+- Use polars for data manipulation
+- Implement proper data validation
+- Handle missing values appropriately
+- Use efficient data structures
+- A variable in the last expression of a cell is automatically displayed as a table
+</data_handling>
 
 <ui_elements>
 - Access UI element values with .value attribute (e.g., slider.value)
@@ -283,7 +371,8 @@ Marimo's reactivity means:
 
 <example title="Basic UI with reactivity">
 import marimo as mo
-import matplotlib.pyplot as plt
+import altair as alt
+import polars as pl
 import numpy as np
 
 # Create a slider and display it
@@ -295,21 +384,41 @@ n_points  # Display the slider
 x = np.random.rand(n_points.value)
 y = np.random.rand(n_points.value)
 
-plt.figure(figsize=(8, 6))
-plt.scatter(x, y, alpha=0.7)
-plt.title(f"Scatter plot with {{n_points.value}} points")
-plt.xlabel("X axis")
-plt.ylabel("Y axis")
-plt.gca()  # Return the current axes to display the plot
+df = pl.DataFrame({{"x": x, "y": y}})
+
+chart = alt.Chart(df).mark_circle(opacity=0.7).encode(
+    x=alt.X('x', title='X axis'),
+    y=alt.Y('y', title='Y axis')
+).properties(
+    title=f"Scatter plot with {{n_points.value}} points",
+    width=400,
+    height=300
+)
+
+chart
 </example>"""
 
-    for language in language_rules:
-        if len(language_rules[language]) == 0:
-            continue
+    if mode == "agent":
+        # In agent-mode, we can add how to insert cells into the notebook.
+        for lang in LANGUAGES:
+            # check if multiple_cells rules are present for this language
+            rule_to_add = language_rules_multiple_cells.get(
+                lang, language_rules.get(lang, [])
+            )
+            if rule_to_add:
+                system_prompt += (
+                    f"\n\n## Rules for {lang}:\n{_rules(rule_to_add)}"
+                )
 
-        system_prompt += (
-            f"\n\n## Rules for {language}:\n{_rules(language_rules[language])}"
-        )
+        system_prompt += "\n\n## Rules for inserting cells:\n"
+        system_prompt += 'For markdown cells, use `mo.md(f"""{content}""")`\n'
+        system_prompt += 'For sql cells, use `mo.sql(f"""{content}""")`. If a database engine is specified, use `mo.sql(f"""{content}""", engine=engine)` instead.\n'
+    else:
+        for language in language_rules:
+            if len(language_rules[language]) == 0:
+                continue
+
+            system_prompt += f"\n\n## Rules for {language}:\n{_rules(language_rules[language])}"
 
     if custom_rules and custom_rules.strip():
         system_prompt += f"\n\n## Additional rules:\n{custom_rules}"
@@ -320,6 +429,7 @@ plt.gca()  # Return the current axes to display the plot
         )
 
     if context:
+        system_prompt += _format_plain_text(context.plain_text)
         system_prompt += _format_variables(context.variables)
         system_prompt += _format_schema_info(context.schema)
 

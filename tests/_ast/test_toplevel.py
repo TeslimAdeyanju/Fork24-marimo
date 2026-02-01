@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import builtins
-
 from marimo._ast import toplevel
 from marimo._ast.app import App, InternalApp
 from marimo._ast.toplevel import (
@@ -11,8 +9,7 @@ from marimo._ast.toplevel import (
     TopLevelStatus,
     TopLevelType,
 )
-
-BUILTINS = set(builtins.__dict__.keys())
+from marimo._ast.variables import BUILTINS
 
 
 class TestTopLevelStatus:
@@ -584,10 +581,23 @@ class TestTopLevelHook:
                 return Example()
 
         extraction = TopLevelExtraction.from_graph(
-            f._cell,
             InternalApp(app).graph,
+            cell=f._cell,
         )
         assert [
             TopLevelType.TOPLEVEL,
             TopLevelType.TOPLEVEL,
         ] == [s.type for s in extraction], [s.hint for s in extraction]
+
+    @staticmethod
+    def test_class_builtin_ignored(app) -> None:
+        @app.cell
+        def cell():
+            class Example:
+                @staticmethod
+                def method() -> None:
+                    print(__class__)
+                    return
+
+        status = TopLevelStatus.from_cell(cell._cell, BUILTINS)
+        assert status.type == TopLevelType.TOPLEVEL

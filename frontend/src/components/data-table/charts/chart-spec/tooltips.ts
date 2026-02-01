@@ -4,10 +4,11 @@ import type {
   ColorDef,
   PositionDef,
   StringFieldDef,
-} from "vega-lite/build/src/channeldef";
+} from "vega-lite/types_unstable/channeldef.js";
 import type { DataType } from "@/core/kernel/messages";
 import type { ChartSchemaType } from "../schemas";
 import { isFieldSet } from "./spec";
+import { escapeFieldName } from "./utils";
 
 function getTooltipFormat(dataType: DataType): string | undefined {
   switch (dataType) {
@@ -29,7 +30,7 @@ interface GetTooltipParams {
 
 export function getTooltips(
   params: GetTooltipParams,
-): Array<StringFieldDef<string>> | undefined {
+): StringFieldDef<string>[] | undefined {
   const { formValues, xEncoding, yEncoding, colorByEncoding } = params;
 
   if (!formValues.tooltips) {
@@ -60,7 +61,7 @@ export function getTooltips(
       }
 
       const tooltip: StringFieldDef<string> = {
-        field: encoding.field,
+        field: encoding.field, // Already escaped in the encoding
         aggregate: encoding.aggregate,
         timeUnit: encoding.timeUnit,
         format: getTooltipFormat(type),
@@ -73,7 +74,7 @@ export function getTooltips(
 
   // If autoTooltips is enabled, we manually add the x, y, and color columns to the tooltips
   if (formValues.tooltips.auto) {
-    const tooltips: Array<StringFieldDef<string>> = [];
+    const tooltips: StringFieldDef<string>[] = [];
     const xTooltip = addTooltip(
       xEncoding,
       formValues.general?.xColumn?.type || "string",
@@ -105,7 +106,7 @@ export function getTooltips(
 
   // Selected tooltips from the form.
   const selectedTooltips = formValues.tooltips.fields ?? [];
-  const tooltips: Array<StringFieldDef<string>> = [];
+  const tooltips: StringFieldDef<string>[] = [];
 
   // We need to find the matching columns for the selected tooltips if they exist
   // Otherwise, we can add them without other parameters
@@ -159,7 +160,7 @@ export function getTooltips(
     }
 
     const otherTooltip: StringFieldDef<string> = {
-      field: tooltip.field,
+      field: escapeFieldName(tooltip.field),
     };
     tooltips.push(otherTooltip);
   }

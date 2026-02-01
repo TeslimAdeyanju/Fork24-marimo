@@ -2,12 +2,12 @@ fail_fast: false
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-yaml
 
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.7
+    rev: v1.7.8
     hooks:
       - id: actionlint
         args: [-ignore, SC]
@@ -31,7 +31,7 @@ repos:
         pass_filenames: false
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.3
+    rev: v0.14.1
     hooks:
       # Run the linter
       - id: ruff
@@ -40,11 +40,10 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/biomejs/pre-commit
-    rev: v2.1.1
+    rev: v2.2.6
     hooks:
       - id: biome-check
-        args: [--config-path, biome.jsonc, --diagnostic-level, warn]
-        additional_dependencies: ['@biomejs/biome@2.0.0-beta.6']
+        args: [--diagnostic-level, warn]
         exclude: |
           (?x)^(
             docs/_static/.*|

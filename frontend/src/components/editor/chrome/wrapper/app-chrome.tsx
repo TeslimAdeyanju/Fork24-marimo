@@ -1,5 +1,10 @@
 /* Copyright 2024 Marimo. All rights reserved. */
-import React, { type PropsWithChildren, Suspense, useEffect } from "react";
+import React, {
+  type PropsWithChildren,
+  Suspense,
+  useEffect,
+  useId,
+} from "react";
 import {
   type ImperativePanelHandle,
   Panel,
@@ -11,39 +16,57 @@ import { Sidebar } from "./sidebar";
 import "./app-chrome.css";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { XIcon } from "lucide-react";
-import { ChatPanel } from "@/components/chat/chat-panel";
-import { DependencyGraphPanel } from "@/components/editor/chrome/panels/dependency-graph-panel";
 import { Button } from "@/components/ui/button";
 import { LazyMount } from "@/components/utils/lazy-mount";
 import { IfCapability } from "@/core/config/if-capability";
 import { cn } from "@/utils/cn";
 import { ErrorBoundary } from "../../boundary/ErrorBoundary";
 import { ContextAwarePanel } from "../panels/context-aware-panel/context-aware-panel";
-import { DataSourcesPanel } from "../panels/datasources-panel";
-import { DocumentationPanel } from "../panels/documentation-panel";
-import { ErrorsPanel } from "../panels/error-panel";
-import { FileExplorerPanel } from "../panels/file-explorer-panel";
-import { LogsPanel } from "../panels/logs-panel";
-import { OutlinePanel } from "../panels/outline-panel";
-import { PackagesPanel } from "../panels/packages-panel";
-import { ScratchpadPanel } from "../panels/scratchpad-panel";
-import { SecretsPanel } from "../panels/secrets-panel";
-import { SnippetsPanel } from "../panels/snippets-panel";
-import { TracingPanel } from "../panels/tracing-panel";
-import { VariablePanel } from "../panels/variable-panel";
 import { useChromeActions, useChromeState } from "../state";
 import { Minimap } from "./minimap";
 import { PanelsWrapper } from "./panels";
+import { PendingAICells } from "./pending-ai-cells";
 import { createStorage } from "./storage";
 import { handleDragging } from "./utils";
 
 const LazyTerminal = React.lazy(() => import("@/components/terminal/terminal"));
+const LazyChatPanel = React.lazy(() => import("@/components/chat/chat-panel"));
+const LazyAgentPanel = React.lazy(
+  () => import("@/components/chat/acp/agent-panel"),
+);
+const LazyDependencyGraphPanel = React.lazy(
+  () => import("@/components/editor/chrome/panels/dependency-graph-panel"),
+);
+const LazyDataSourcesPanel = React.lazy(
+  () => import("../panels/datasources-panel"),
+);
+const LazyDocumentationPanel = React.lazy(
+  () => import("../panels/documentation-panel"),
+);
+const LazyErrorsPanel = React.lazy(() => import("../panels/error-panel"));
+const LazyFileExplorerPanel = React.lazy(
+  () => import("../panels/file-explorer-panel"),
+);
+const LazyLogsPanel = React.lazy(() => import("../panels/logs-panel"));
+const LazyOutlinePanel = React.lazy(() => import("../panels/outline-panel"));
+const LazyPackagesPanel = React.lazy(() => import("../panels/packages-panel"));
+const LazyScratchpadPanel = React.lazy(
+  () => import("../panels/scratchpad-panel"),
+);
+const LazySecretsPanel = React.lazy(() => import("../panels/secrets-panel"));
+const LazySnippetsPanel = React.lazy(() => import("../panels/snippets-panel"));
+const LazyTracingPanel = React.lazy(() => import("../panels/tracing-panel"));
+const LazyVariablePanel = React.lazy(() => import("../panels/variable-panel"));
+const LazyCachePanel = React.lazy(() => import("../panels/cache-panel"));
 
 export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
   const { isSidebarOpen, isTerminalOpen, selectedPanel } = useChromeState();
   const { setIsSidebarOpen, setIsTerminalOpen } = useChromeActions();
   const sidebarRef = React.useRef<ImperativePanelHandle>(null);
   const terminalRef = React.useRef<ImperativePanelHandle>(null);
+
+  const helperPanelId = useId();
+  const terminalPanelId = useId();
 
   // sync sidebar
   useEffect(() => {
@@ -125,7 +148,7 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
     <ErrorBoundary>
       <div className="flex flex-col h-full flex-1 overflow-hidden mr-[-4px]">
         <div className="p-3 border-b flex justify-between items-center">
-          <div className="text-sm text-[var(--slate-11)] uppercase tracking-wide font-semibold flex-1">
+          <div className="text-sm text-(--slate-11) uppercase tracking-wide font-semibold flex-1">
             {selectedPanel}
           </div>
           <Button
@@ -140,20 +163,22 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
         </div>
         <Suspense>
           <TooltipProvider>
-            {selectedPanel === "files" && <FileExplorerPanel />}
-            {selectedPanel === "errors" && <ErrorsPanel />}
-            {selectedPanel === "variables" && <VariablePanel />}
-            {selectedPanel === "dependencies" && <DependencyGraphPanel />}
-            {selectedPanel === "packages" && <PackagesPanel />}
-            {selectedPanel === "outline" && <OutlinePanel />}
-            {selectedPanel === "datasources" && <DataSourcesPanel />}
-            {selectedPanel === "documentation" && <DocumentationPanel />}
-            {selectedPanel === "snippets" && <SnippetsPanel />}
-            {selectedPanel === "scratchpad" && <ScratchpadPanel />}
-            {selectedPanel === "chat" && <ChatPanel />}
-            {selectedPanel === "logs" && <LogsPanel />}
-            {selectedPanel === "tracing" && <TracingPanel />}
-            {selectedPanel === "secrets" && <SecretsPanel />}
+            {selectedPanel === "files" && <LazyFileExplorerPanel />}
+            {selectedPanel === "errors" && <LazyErrorsPanel />}
+            {selectedPanel === "variables" && <LazyVariablePanel />}
+            {selectedPanel === "dependencies" && <LazyDependencyGraphPanel />}
+            {selectedPanel === "packages" && <LazyPackagesPanel />}
+            {selectedPanel === "outline" && <LazyOutlinePanel />}
+            {selectedPanel === "datasources" && <LazyDataSourcesPanel />}
+            {selectedPanel === "documentation" && <LazyDocumentationPanel />}
+            {selectedPanel === "snippets" && <LazySnippetsPanel />}
+            {selectedPanel === "scratchpad" && <LazyScratchpadPanel />}
+            {selectedPanel === "chat" && <LazyChatPanel />}
+            {selectedPanel === "agents" && <LazyAgentPanel />}
+            {selectedPanel === "logs" && <LazyLogsPanel />}
+            {selectedPanel === "tracing" && <LazyTracingPanel />}
+            {selectedPanel === "secrets" && <LazySecretsPanel />}
+            {selectedPanel === "cache" && <LazyCachePanel />}
           </TooltipProvider>
         </Suspense>
       </div>
@@ -163,13 +188,14 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
   const helperPanel = (
     <Panel
       ref={sidebarRef}
-      id="helper"
+      id={`helper-${helperPanelId}`}
+      data-testid="helper"
       key={"helper"}
       collapsedSize={0}
       collapsible={true}
       className={cn(
-        "dark:bg-[var(--slate-1)] no-print print:hidden hide-on-fullscreen",
-        isSidebarOpen && "border-r border-l border-[var(--slate-7)]",
+        "dark:bg-(--slate-1) no-print print:hidden hide-on-fullscreen",
+        isSidebarOpen && "border-r border-l border-(--slate-7)",
       )}
       minSize={10}
       // We can't make the default size greater than 0, otherwise it will start open
@@ -193,13 +219,14 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
   const terminalPanel = (
     <Panel
       ref={terminalRef}
-      id="terminal"
+      id={`terminal-${terminalPanelId}`}
+      data-testid="terminal"
       key={"terminal"}
       collapsedSize={0}
       collapsible={true}
       className={cn(
-        "dark:bg-[var(--slate-1)] no-print print:hidden hide-on-fullscreen",
-        isTerminalOpen && "border-[var(--slate-7)]",
+        "dark:bg-(--slate-1) no-print print:hidden hide-on-fullscreen",
+        isTerminalOpen && "border-(--slate-7)",
       )}
       minSize={10}
       // We can't make the default size greater than 0, otherwise it will start open
@@ -246,6 +273,7 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
         <ContextAwarePanel />
       </PanelGroup>
       <Minimap />
+      <PendingAICells />
       <ErrorBoundary>
         <TooltipProvider>
           <Footer />

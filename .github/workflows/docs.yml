@@ -7,6 +7,9 @@ on:
   # Deploy on workflow dispatch
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 env:
   VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
   VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -19,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 🐍 Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           python-version: 3.12
@@ -40,6 +43,9 @@ jobs:
         run: npx sitefetch https://docs.marimo.io -o ${{ env.OUTPUT_FILE }} --match '!**/*.{txt,xml}'
         env:
           OUTPUT_FILE: .vercel/output/static/llms.txt
+
+      - name: 📚 CLAUDE.md
+        run: cp docs/_static/CLAUDE.md .vercel/output/static/CLAUDE.md
 
       - name: 🚀 Deploy to Vercel
         if: github.ref == 'refs/heads/main'

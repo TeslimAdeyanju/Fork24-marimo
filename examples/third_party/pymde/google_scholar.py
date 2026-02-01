@@ -4,26 +4,25 @@
 #     "pymde==0.1.18",
 # ]
 # ///
+
 import marimo
 
-__generated_with = "0.1.68"
+__generated_with = "0.17.2"
 app = marimo.App()
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # Embedding Google Scholar
+    mo.md(r"""
+    # Embedding Google Scholar
 
-        This notebook shows how to use the function `pymde.preserve_distances` to
-        produce embeddings of networks, in which the goal is to preserve the
-        shortest-path distances in the network.
+    This notebook shows how to use the function `pymde.preserve_distances` to
+    produce embeddings of networks, in which the goal is to preserve the
+    shortest-path distances in the network.
 
-        It uses an academic co-authorship network collected from Google Scholar as 
-        a case study.
-        """
-    )
+    It uses an academic co-authorship network collected from Google Scholar as
+    a case study.
+    """)
     return
 
 
@@ -40,20 +39,20 @@ def _():
 @app.cell
 def _(pymde):
     gscholar = pymde.datasets.google_scholar()
-    return gscholar,
+    return (gscholar,)
 
 
 @app.cell
 def _(gscholar):
     scholars_df = gscholar.other_data['dataframe']
     scholars_df
-    return scholars_df,
+    return
 
 
 @app.cell
 def _(gscholar):
     coauthorship_graph = gscholar.data
-    return coauthorship_graph,
+    return (coauthorship_graph,)
 
 
 @app.cell
@@ -84,7 +83,7 @@ def _(DEVICE, coauthorship_graph, pymde):
         verbose=True)
 
     mde.embed(verbose=True)
-    return mde,
+    return (mde,)
 
 
 @app.cell
@@ -97,7 +96,7 @@ def _(mde, np, plt):
     plt.xticks(np.arange(1, 11))
     plt.xlabel('graph distances')
     plt.show()
-    return ax, original_distances
+    return
 
 
 @app.cell
@@ -122,7 +121,7 @@ def _(coauthorship_graph, gscholar, mde, plt, torch):
     _ax = mde.plot(edges=edges, color_by=gscholar.attributes['coauthors'], color_map='viridis', figsize_inches=(12, 12))
     plt.tight_layout()
     _ax
-    return edges, indices
+    return
 
 
 @app.cell
@@ -139,7 +138,7 @@ def _(gscholar):
     }
     scholar_disciplines_df = gscholar.other_data['disciplines']
     topic_colors = [legend[code] for code in scholar_disciplines_df['topic']]
-    return colors, legend, scholar_disciplines_df, topic_colors
+    return scholar_disciplines_df, topic_colors
 
 
 @app.cell
@@ -150,15 +149,15 @@ def _(mde, pymde, scholar_disciplines_df, topic_colors):
 
 
 @app.cell
-def __(torch):
+def _(torch):
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    return DEVICE,
+    return (DEVICE,)
 
 
 @app.cell
 def _():
     import marimo as mo
-    return mo,
+    return (mo,)
 
 
 if __name__ == "__main__":

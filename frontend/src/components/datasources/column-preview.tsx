@@ -3,6 +3,7 @@
 import { useAtomValue } from "jotai";
 import { PlusSquareIcon } from "lucide-react";
 import React, { Suspense } from "react";
+import { useLocale } from "react-aria";
 import { maybeAddAltairImport } from "@/core/cells/add-missing-import";
 import { useCellActions } from "@/core/cells/cells";
 import { useLastFocusedCellId } from "@/core/cells/focus";
@@ -14,12 +15,13 @@ import type {
   DataTableColumn,
   DataType,
 } from "@/core/kernel/messages";
-import { previewDatasetColumn } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { useOnMount } from "@/hooks/useLifecycle";
 import type { TopLevelFacetedUnitSpec } from "@/plugins/impl/data-explorer/queries/types";
 import { type Theme, useTheme } from "@/theme/useTheme";
 import { Events } from "@/utils/events";
 import { prettyNumber } from "@/utils/numbers";
+import { LazyVegaEmbed } from "../charts/lazy";
 import type { ColumnHeaderStatsKey } from "../data-table/types";
 import { CopyClipboardIcon } from "../icons/copy-icon";
 import { Spinner } from "../icons/spinner";
@@ -29,10 +31,6 @@ import { ColumnPreviewContainer } from "./components";
 import { InstallPackageButton } from "./install-package-button";
 import { convertStatsName, sqlCode } from "./utils";
 
-const LazyVegaLite = React.lazy(() =>
-  import("react-vega").then((m) => ({ default: m.VegaLite })),
-);
-
 export const DatasetColumnPreview: React.FC<{
   table: DataTable;
   column: DataTableColumn;
@@ -41,6 +39,8 @@ export const DatasetColumnPreview: React.FC<{
   sqlTableContext?: SQLTableContext;
 }> = ({ table, column, preview, onAddColumnChart, sqlTableContext }) => {
   const { theme } = useTheme();
+  const { previewDatasetColumn } = useRequestClient();
+  const { locale } = useLocale();
 
   const previewColumn = () => {
     previewDatasetColumn({
@@ -106,7 +106,9 @@ export const DatasetColumnPreview: React.FC<{
       refetchPreview: previewColumn,
     });
 
-  const stats = preview.stats && renderStats(preview.stats, column.type);
+  const stats =
+    preview.stats &&
+    renderStats({ stats: preview.stats, dataType: column.type, locale });
 
   const chart = preview.chart_spec && renderChart(preview.chart_spec, theme);
 
@@ -171,12 +173,13 @@ export function renderPreviewError({
   );
 }
 
-export function renderStats(
-  stats: Partial<
-    Record<ColumnHeaderStatsKey, string | number | boolean | null | undefined>
-  >,
-  dataType: DataType,
-) {
+interface RenderStatsProps {
+  stats: Partial<Record<ColumnHeaderStatsKey, unknown>>;
+  dataType: DataType;
+  locale: string;
+}
+
+export function renderStats({ stats, dataType, locale }: RenderStatsProps) {
   return (
     <div className="gap-x-16 gap-y-1 grid grid-cols-2-fit border rounded p-2 empty:hidden">
       {Object.entries(stats).map(([key, value]) => {
@@ -190,7 +193,7 @@ export function renderStats(
               {convertStatsName(key as ColumnHeaderStatsKey, dataType)}
             </span>
             <span className="text-xs font-bold text-muted-foreground tracking-wide">
-              {prettyNumber(value)}
+              {prettyNumber(value, locale)}
             </span>
             <CopyClipboardIcon
               className="h-3 w-3 invisible group-hover:visible"
@@ -220,12 +223,15 @@ export function renderChart(chartSpec: string, theme: Theme) {
 
   return (
     <Suspense fallback={LoadingChart}>
-      <LazyVegaLite
+      <LazyVegaEmbed
         spec={updateSpec(JSON.parse(chartSpec) as TopLevelFacetedUnitSpec)}
-        width={"container" as unknown as number}
-        height={100}
-        actions={false}
-        theme={theme === "dark" ? "dark" : "vox"}
+        options={{
+          theme: theme === "dark" ? "dark" : "vox",
+          height: 100,
+          width: "container" as unknown as number,
+          actions: false,
+          renderer: "canvas",
+        }}
       />
     </Suspense>
   );

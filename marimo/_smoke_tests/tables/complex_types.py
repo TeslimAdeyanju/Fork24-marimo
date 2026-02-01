@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.14.10"
+__generated_with = "0.17.2"
 app = marimo.App(width="medium")
 
 
@@ -97,6 +97,9 @@ def _():
             ),
         }
     )
+
+    # df = pl.concat([df]*10, rechunk=True).with_row_count(name="idx")
+
     mo.ui.table(df)
     return df, mo, pl
 
@@ -110,11 +113,23 @@ def _(df):
 
 @app.cell
 def _(mo, pd, pl):
+    complex = [1 + 2j, 2 + 3j]
+
     additional_types_pd = pd.DataFrame(
-        {"complex": [1 + 2j, 2 + 3j], "bigint": [2**64, 2**127]}
+        {
+            "complex": complex,
+            "bigint": [2**64, 2**127],
+            "list_big_ints": [[1253397962952480469], [1253397962952480469]],
+            "large_floats": [[125339796295248046.9], [-12533979629524804.69]],
+        }
     )
     additional_types_pl = pl.DataFrame(
-        {"complex": [1 + 2j, 2 + 3j], "bigint": [2**64, 2**65]}
+        {
+            "complex": complex,
+            "bigint": [2**64, -(2**65)],
+            "list_big_ints": [[1253397962952480469], [1253397962952480469]],
+            "large_floats": [[125339796295248046.9], [-12533979629524804.69]],
+        }
     )
     mo.vstack([additional_types_pd, additional_types_pl])
     return
@@ -179,6 +194,7 @@ def _():
     # wow_data
     # wow_data.collect()
     return
+
 
 
 if __name__ == "__main__":

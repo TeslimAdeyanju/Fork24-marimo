@@ -1,7 +1,10 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
+import { closeCompletion, completionStatus } from "@codemirror/autocomplete";
+import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { useMemo } from "react";
 import { mergeProps, useFocusWithin, useKeyboard } from "react-aria";
 import { aiCompletionCellAtom } from "@/core/ai/state";
 import { cellIdsAtom, notebookAtom, useCellActions } from "@/core/cells/cells";
@@ -16,7 +19,7 @@ import {
 } from "@/core/config/config";
 import type { HotkeyAction } from "@/core/hotkeys/hotkeys";
 import { parseShortcut } from "@/core/hotkeys/shortcuts";
-import { saveCellConfig } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import { useSaveNotebook } from "@/core/saving/save-component";
 import { Events } from "@/utils/events";
 import type { CollapsibleTree } from "@/utils/id-tree";
@@ -30,7 +33,7 @@ import {
   useCellSelectionActions,
   useIsCellSelected,
 } from "./selection";
-import { temporarilyShownCodeAtom } from "./state";
+import { useTemporarilyShownCodeActions } from "./state";
 import { handleVimKeybinding } from "./vim-bindings";
 
 interface HotkeyHandler {
@@ -82,7 +85,7 @@ function addSingleHandler(handler: HotkeyHandler["bulkHandle"]): HotkeyHandler {
 function useCellFocusProps(cellId: CellId) {
   const focusActions = useCellFocusActions();
   const actions = useCellActions();
-  const setTemporarilyShownCode = useSetAtom(temporarilyShownCodeAtom);
+  const temporarilyShownCodeActions = useTemporarilyShownCodeActions();
 
   // This occurs at the cell level and descedants.
   const { focusWithinProps } = useFocusWithin({
@@ -92,7 +95,7 @@ function useCellFocusProps(cellId: CellId) {
     },
     onBlurWithin: () => {
       // On blur, hide the code if it was temporarily shown.
-      setTemporarilyShownCode(false);
+      temporarilyShownCodeActions.remove(cellId);
       actions.markTouched({ cellId });
       focusActions.blurCell();
     },
@@ -125,10 +128,11 @@ export function useCellNavigationProps(
   },
 ) {
   const { saveOrNameNotebook } = useSaveNotebook();
+  const { saveCellConfig } = useRequestClient();
   const setAiCompletionCell = useSetAtom(aiCompletionCellAtom);
   const actions = useCellActions();
   const store = useStore();
-  const setTemporarilyShownCode = useSetAtom(temporarilyShownCodeAtom);
+  const temporarilyShownCodeActions = useTemporarilyShownCodeActions();
   const runCells = useRunCells();
   const keymapPreset = useAtomValue(keymapPresetAtom);
   const { copyCells, pasteAtCell } = useCellClipboard();
@@ -271,7 +275,7 @@ export function useCellNavigationProps(
         },
         // Enter will focus the cell editor.
         Enter: () => {
-          setTemporarilyShownCode(true);
+          temporarilyShownCodeActions.add(cellId);
           focusCellEditor(store, cellId);
           selectionActions.clear();
           return true;
@@ -590,7 +594,7 @@ export function useCellNavigationProps(
   return mergeProps(focusWithinProps, keyboardProps, {
     "data-selected": isSelected,
     className:
-      "data-[selected=true]:ring-1 data-[selected=true]:ring-[var(--blue-8)] data-[selected=true]:ring-offset-1",
+      "data-[selected=true]:ring-1 data-[selected=true]:ring-(--blue-8) data-[selected=true]:ring-offset-1",
   });
 }
 
@@ -600,16 +604,68 @@ export function useCellNavigationProps(
  *
  * Handles both keyboard and mouse navigation.
  */
-export function useCellEditorNavigationProps(cellId: CellId) {
-  const setTemporarilyShownCode = useSetAtom(temporarilyShownCodeAtom);
+export function useCellEditorNavigationProps(
+  cellId: CellId,
+  editorView: React.RefObject<EditorView | null>,
+) {
+  const temporarilyShownCodeActions = useTemporarilyShownCodeActions();
+  const keymapPreset = useAtomValue(keymapPresetAtom);
+  const hotkeys = useAtomValue(hotkeysAtom);
+
+  const vimCommandModeShortcut = useMemo(() => {
+    const shortcut = hotkeys.getHotkey("command.vimEnterCommandMode");
+    return parseShortcut(shortcut.key);
+  }, [hotkeys]);
+
+  const exitToCommandMode = () => {
+    temporarilyShownCodeActions.remove(cellId);
+    focusCell(cellId);
+  };
+
+  const handleEscape = () => {
+    // If there is a text selection or autocomplete popup in the editor, we clear those and return.
+    // Subsequent 'Escapes' will exit to command mode.
+
+    if (!editorView.current) {
+      // If no editor, we can exit to command mode immediately
+      exitToCommandMode();
+      return;
+    }
+
+    const view = editorView.current;
+    const state = view.state;
+
+    const hasTextSelection = !state.selection.main.empty;
+
+    if (hasTextSelection) {
+      view.dispatch({
+        selection: EditorSelection.single(state.selection.main.from), // Cursor to the start of the selection
+      });
+      return;
+    }
+
+    const hasAutocompletePopup = completionStatus(state) !== null;
+    if (hasAutocompletePopup) {
+      closeCompletion(view);
+      return;
+    }
+
+    exitToCommandMode();
+  };
 
   const { keyboardProps } = useKeyboard({
     onKeyDown: (evt) => {
-      if (evt.key === "Escape") {
-        setTemporarilyShownCode(false);
-        focusCell(cellId);
+      if (keymapPreset === "vim") {
+        // For vim mode, use configurable shortcut
+        if (vimCommandModeShortcut(evt)) {
+          handleEscape();
+        }
+      } else {
+        // For non-vim mode, regular Escape exits to command mode
+        if (evt.key === "Escape") {
+          handleEscape();
+        }
       }
-
       evt.continuePropagation();
     },
   });

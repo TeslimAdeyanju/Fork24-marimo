@@ -7,7 +7,7 @@
 
 import marimo
 
-__generated_with = "0.10.6"
+__generated_with = "0.17.4"
 app = marimo.App()
 
 
@@ -19,13 +19,17 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("""# Tabs""")
+    mo.md("""
+    # Tabs
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("""Use `mo.ui.tabs` to organize outputs.""")
+    mo.md("""
+    Use `mo.ui.tabs` to organize outputs.
+    """)
     return
 
 
@@ -55,7 +59,7 @@ def _(mo):
             "🏢 Organization": organization,
         }
     )
-    return employees, first, last, org, organization, settings
+    return employees, first, last, org
 
 
 @app.cell

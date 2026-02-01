@@ -9,7 +9,7 @@ import { getNotebook } from "../cells/cells";
 import type { CellId } from "../cells/ids";
 import { notebookCellEditorViews } from "../cells/utils";
 import { getResolvedMarimoConfig } from "../config/config";
-import { sendFormat } from "../network/requests";
+import { getRequestClient } from "../network/requests";
 import { cellActionsState } from "./cells/state";
 import { cellIdState } from "./config/extension";
 import { languageAdapterState } from "./language/extension";
@@ -17,6 +17,7 @@ import {
   getEditorCodeAsPython,
   updateEditorCodeFromPython,
 } from "./language/utils";
+import { replaceEditorContent } from "./replace-editor-content";
 
 export const formattingChangeEffect = StateEffect.define<boolean>();
 
@@ -25,6 +26,7 @@ export const formattingChangeEffect = StateEffect.define<boolean>();
  * and update the editor views with the formatted code.
  */
 export async function formatEditorViews(views: Record<CellId, EditorView>) {
+  const { sendFormat } = getRequestClient();
   const codes = Objects.mapValues(views, (view) => getEditorCodeAsPython(view));
 
   const formatResponse = await sendFormat({
@@ -105,15 +107,7 @@ export async function formatSQL(editor: EditorView) {
   });
 
   // Update editor with formatted SQL
-  const doc = editor.state.doc;
-
-  // Noop if the code is the same
-  if (doc.toString() === formattedSQL) {
-    return;
-  }
-
-  editor.dispatch({
-    changes: { from: 0, to: doc.length, insert: formattedSQL },
+  replaceEditorContent(editor, formattedSQL, {
     effects: [formattingChangeEffect.of(true)],
   });
 }

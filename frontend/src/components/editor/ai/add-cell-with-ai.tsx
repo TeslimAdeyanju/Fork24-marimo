@@ -1,62 +1,78 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
+import { useChat } from "@ai-sdk/react";
 import {
   autocompletion,
   type Completion,
   type CompletionContext,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { sql } from "@codemirror/lang-sql";
+import { markdown } from "@codemirror/lang-markdown";
 import { Prec } from "@codemirror/state";
+import { promptHistory, storePrompt } from "@marimo-team/codemirror-ai";
 import ReactCodeMirror, {
   EditorView,
   keymap,
   minimalSetup,
   type ReactCodeMirrorRef,
 } from "@uiw/react-codemirror";
-import { useCompletion } from "ai/react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useStore } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { ChevronsUpDown, Loader2Icon, SparklesIcon, XIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import {
+  ChevronsUpDown,
+  DatabaseIcon,
+  Loader2Icon,
+  SendHorizontal,
+  SparklesIcon,
+  XIcon,
+} from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import useEvent from "react-use-event-hook";
+import { z } from "zod";
+import { AIModelDropdown } from "@/components/ai/ai-model-dropdown";
+import {
+  buildCompletionRequestBody,
+  handleToolCall,
+} from "@/components/chat/chat-utils";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/use-toast";
-import { customPythonLanguageSupport } from "@/core/codemirror/language/languages/python";
-import { SQLLanguageAdapter } from "@/core/codemirror/language/languages/sql";
-import { allTablesAtom } from "@/core/datasets/data-source-connections";
+import { stagedAICellsAtom, useStagedCells } from "@/core/ai/staged-cells";
+import type { ToolNotebookContext } from "@/core/ai/tools/base";
+import { useCellActions } from "@/core/cells/cells";
+import { resourceExtension } from "@/core/codemirror/ai/resources";
+import { useRequestClient } from "@/core/network/requests";
+import type { AiCompletionRequest } from "@/core/network/types";
 import { useRuntimeManager } from "@/core/runtime/config";
-import { variablesAtom } from "@/core/variables/state";
-import { type ResolvedTheme, useTheme } from "@/theme/useTheme";
+import { useTheme } from "@/theme/useTheme";
 import { cn } from "@/utils/cn";
 import { prettyError } from "@/utils/errors";
-import { useCellActions } from "../../../core/cells/cells";
+import { jotaiJsonStorage } from "@/utils/storage/jotai";
+import { ZodLocalStorage } from "@/utils/storage/typed";
+import { PythonIcon } from "../cell/code/icons";
 import {
-  getAICompletionBody,
-  mentionsCompletionSource,
-} from "./completion-utils";
-import {
-  getTableMentionCompletions,
-  getVariableMentionCompletions,
-} from "./completions";
-
-const pythonExtensions = [
-  customPythonLanguageSupport(),
-  EditorView.lineWrapping,
-];
-const sqlExtensions = [sql(), EditorView.lineWrapping];
+  CompletionActions,
+  createAiCompletionOnKeydown,
+} from "./completion-handlers";
+import { CONTEXT_TRIGGER, mentionsCompletionSource } from "./completion-utils";
+import { StreamingChunkTransport } from "./transport/chat-transport";
 
 // Persist across sessions
 const languageAtom = atomWithStorage<"python" | "sql">(
   "marimo:ai-language",
   "python",
+  jotaiJsonStorage,
 );
+
+const KEY = "marimo:ai-prompt-history";
+// Store the prompt history in local storage
+const promptHistoryStorage = new ZodLocalStorage(z.array(z.string()), () => []);
 
 /**
  * Add a cell with AI.
@@ -64,30 +80,66 @@ const languageAtom = atomWithStorage<"python" | "sql">(
 export const AddCellWithAI: React.FC<{
   onClose: () => void;
 }> = ({ onClose }) => {
-  const { createNewCell } = useCellActions();
-  const [completionBody, setCompletionBody] = useState<object>({});
-  const [language, setLanguage] = useAtom(languageAtom);
-  const { theme } = useTheme();
-  const runtimeManager = useRuntimeManager();
+  const store = useStore();
+  const [input, setInput] = useState("");
 
-  const {
-    completion,
-    input,
-    stop,
-    isLoading,
-    setCompletion,
-    setInput,
-    handleSubmit,
-  } = useCompletion({
-    api: runtimeManager.getAiURL("completion").toString(),
-    headers: runtimeManager.headers(),
-    streamProtocol: "text",
+  const { deleteAllStagedCells, clearStagedCells, onStream, addStagedCell } =
+    useStagedCells(store);
+  const [language, setLanguage] = useAtom(languageAtom);
+  const runtimeManager = useRuntimeManager();
+  const { invokeAiTool, sendRun } = useRequestClient();
+
+  const stagedAICells = useAtomValue(stagedAICellsAtom);
+  const inputRef = useRef<ReactCodeMirrorRef>(null);
+
+  const { createNewCell, prepareForRun } = useCellActions();
+  const toolContext: ToolNotebookContext = {
+    store,
+    addStagedCell,
+    createNewCell,
+    prepareForRun,
+    sendRun,
+  };
+
+  const { sendMessage, stop, status, addToolResult } = useChat({
     // Throttle the messages and data updates to 100ms
     experimental_throttle: 100,
-    body: {
-      ...completionBody,
-      language: language,
-      code: "",
+    transport: new StreamingChunkTransport(
+      {
+        api: runtimeManager.getAiURL("completion").toString(),
+        headers: runtimeManager.headers(),
+        prepareSendMessagesRequest: async (options) => {
+          const completionBody = await buildCompletionRequestBody(
+            options.messages,
+          );
+          const body: AiCompletionRequest = {
+            ...options,
+            ...completionBody,
+            code: "",
+            prompt: "", // Don't need prompt since we are using messages
+            language: language,
+          };
+
+          return {
+            body: body,
+          };
+        },
+      },
+      (chunk) => {
+        onStream(chunk);
+      },
+    ),
+    onToolCall: async ({ toolCall }) => {
+      await handleToolCall({
+        invokeAiTool,
+        addToolResult,
+        toolCall: {
+          toolName: toolCall.toolName,
+          toolCallId: toolCall.toolCallId,
+          input: toolCall.input as Record<string, never>,
+        },
+        toolContext,
+      });
     },
     onError: (error) => {
       toast({
@@ -95,52 +147,92 @@ export const AddCellWithAI: React.FC<{
         description: prettyError(error),
       });
     },
-    onFinish: (_prompt, completion) => {
-      // Remove trailing new lines
-      setCompletion(completion.trimEnd());
-    },
   });
+
+  const isLoading = status === "streaming" || status === "submitted";
+  const hasCompletion = stagedAICells.size > 0;
+  const multipleCompletions = stagedAICells.size > 1;
+
+  const submit = () => {
+    if (!isLoading) {
+      if (inputRef.current?.view) {
+        storePrompt(inputRef.current.view);
+      }
+      // TODO: When we have conversations, don't delete existing cells
+      deleteAllStagedCells();
+      sendMessage({ text: input });
+    }
+  };
+
+  const pythonIcon = (
+    <>
+      <PythonIcon className="size-4 mr-2" />
+      Python
+    </>
+  );
+
+  const sqlIcon = (
+    <>
+      <DatabaseIcon className="size-4 mr-2" />
+      SQL
+    </>
+  );
+
+  const languageDropdown = (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild={true}>
+        <Button
+          variant="text"
+          className="ml-2"
+          size="xs"
+          data-testid="language-button"
+        >
+          {language === "python" ? pythonIcon : sqlIcon}
+          <ChevronsUpDown className="ml-1 h-3.5 w-3.5 text-muted-foreground/70" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center">
+        <div className="px-2 py-1 font-semibold">Select language</div>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => setLanguage("python")}>
+          {pythonIcon}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setLanguage("sql")}>
+          {sqlIcon}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const handleAcceptCompletion = () => {
+    clearStagedCells();
+    onClose();
+  };
+
+  const handleDeclineCompletion = () => {
+    deleteAllStagedCells();
+  };
 
   const inputComponent = (
     <div className="flex items-center px-3">
-      <SparklesIcon className="size-4 text-[var(--blue-11)]" />
-      <DropdownMenu modal={false}>
-        <DropdownMenuTrigger asChild={true}>
-          <Button
-            variant="text"
-            className="ml-2"
-            size="xs"
-            data-testid="language-button"
-          >
-            {language === "python" ? "Python" : "SQL"}
-            <ChevronsUpDown className="ml-1 h-3.5 w-3.5 text-muted-foreground/70" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="center">
-          <DropdownMenuItem onClick={() => setLanguage("python")}>
-            Python
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setLanguage("sql")}>
-            SQL
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <SparklesIcon className="size-4 text-(--blue-11) mr-2" />
       <PromptInput
-        theme={theme}
+        inputRef={inputRef}
         onClose={() => {
-          setCompletion("");
+          deleteAllStagedCells();
           onClose();
         }}
         value={input}
         onChange={(newValue) => {
           setInput(newValue);
-          setCompletionBody(getAICompletionBody({ input: newValue }));
         }}
-        onSubmit={() => {
-          if (!isLoading) {
-            handleSubmit();
-          }
-        }}
+        onSubmit={submit}
+        onKeyDown={createAiCompletionOnKeydown({
+          handleAcceptCompletion,
+          handleDeclineCompletion,
+          isLoading,
+          hasCompletion,
+        })}
       />
       {isLoading && (
         <Button
@@ -154,30 +246,10 @@ export const AddCellWithAI: React.FC<{
           Stop
         </Button>
       )}
-      {!isLoading && completion && (
-        <Button
-          data-testid="accept-completion-button"
-          variant="text"
-          size="sm"
-          className="mb-0"
-          disabled={isLoading}
-          onClick={() => {
-            createNewCell({
-              cellId: "__end__",
-              before: false,
-              code:
-                language === "python"
-                  ? completion
-                  : SQLLanguageAdapter.fromQuery(completion),
-            });
-            setCompletion("");
-            onClose();
-          }}
-        >
-          <span className="text-[var(--grass-11)] opacity-100">Accept</span>
-        </Button>
-      )}
-      <Button variant="text" size="sm" className="mb-0" onClick={onClose}>
+      <Button variant="text" size="sm" onClick={submit} title="Submit">
+        <SendHorizontal className="size-4" />
+      </Button>
+      <Button variant="text" size="sm" className="mb-0 px-1" onClick={onClose}>
         <XIcon className="size-4" />
       </Button>
     </div>
@@ -186,26 +258,36 @@ export const AddCellWithAI: React.FC<{
   return (
     <div className={cn("flex flex-col w-full gap-2 py-2")}>
       {inputComponent}
-      {!completion && (
-        <span className="text-xs text-muted-foreground px-3 flex flex-col gap-1">
-          <span>
-            You can mention{" "}
-            <span className="text-[var(--cyan-11)]">@dataframe</span> or{" "}
-            <span className="text-[var(--cyan-11)]">@sql_table</span> to pull
-            additional context such as column names.
+      <div className="flex flex-row justify-between -mt-1 ml-1 mr-3">
+        {!hasCompletion && (
+          <span className="text-xs text-muted-foreground px-3 flex flex-col gap-1">
+            <span>
+              You can mention{" "}
+              <span className="text-(--cyan-11)">@dataframe</span> or{" "}
+              <span className="text-(--cyan-11)">@sql_table</span> to pull
+              additional context such as column names.
+            </span>
+            <span>Code from other cells is automatically included.</span>
           </span>
-          <span>Code from other cells is automatically included.</span>
-        </span>
-      )}
-      {completion && (
-        <ReactCodeMirror
-          value={completion}
-          className="cm border-t"
-          onChange={setCompletion}
-          theme={theme === "dark" ? "dark" : "light"}
-          extensions={language === "python" ? pythonExtensions : sqlExtensions}
-        />
-      )}
+        )}
+        {hasCompletion && (
+          <CompletionActions
+            isLoading={isLoading}
+            onAccept={handleAcceptCompletion}
+            onDecline={handleDeclineCompletion}
+            size="sm"
+            multipleCompletions={multipleCompletions}
+          />
+        )}
+        <div className="ml-auto flex items-center gap-1">
+          {languageDropdown}
+          <AIModelDropdown
+            triggerClassName="h-7 text-xs max-w-64"
+            iconSize="small"
+            forRole="edit"
+          />
+        </div>
+      </div>
     </div>
   );
 };
@@ -220,12 +302,13 @@ interface PromptInputProps {
   placeholder?: string;
   value: string;
   className?: string;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   onClose: () => void;
   onChange: (value: string) => void;
   onSubmit: (e: KeyboardEvent | undefined, value: string) => void;
   additionalCompletions?: AdditionalCompletions;
-  theme: ResolvedTheme;
   maxHeight?: string;
+  onAddFiles?: (files: File[]) => void;
 }
 
 /**
@@ -241,42 +324,50 @@ export const PromptInput = ({
   className,
   onChange,
   onSubmit,
+  onKeyDown,
   onClose,
+  onAddFiles,
   additionalCompletions,
-  theme,
   maxHeight,
 }: PromptInputProps) => {
   const handleSubmit = onSubmit;
   const handleEscape = onClose;
-  const tablesMap = useAtomValue(allTablesAtom);
-  const variables = useAtomValue(variablesAtom);
+  const store = useStore();
+  const { theme } = useTheme();
 
-  // TablesMap and variable change a lot,
-  // so we use useEvent to memoize the completion source
-  const completionSource: CompletionSource = useEvent(
+  const additionalCompletionsSource: CompletionSource = useEvent(
     (context: CompletionContext) => {
-      const completions = [
-        ...getTableMentionCompletions(tablesMap),
-        ...getVariableMentionCompletions(variables, tablesMap),
-      ];
-
-      // Trigger autocompletion for text that begins with @, can contain dots
-      const matchBeforeRegexes = [/@([\w.]+)?/];
-      if (additionalCompletions) {
-        matchBeforeRegexes.push(additionalCompletions.triggerCompletionRegex);
-        completions.push(...additionalCompletions.completions);
+      if (!additionalCompletions) {
+        return null;
       }
 
-      return mentionsCompletionSource(matchBeforeRegexes, completions)(context);
+      return mentionsCompletionSource(
+        [additionalCompletions.triggerCompletionRegex],
+        additionalCompletions.completions,
+      )(context);
     },
   );
 
   // Changing extensions can be expensive, so
   // it is worth making sure this is memoized well.
   const extensions = useMemo(() => {
+    const markdownLanguage = markdown();
     return [
-      autocompletion({
-        override: [completionSource],
+      autocompletion({}),
+      markdownLanguage,
+      resourceExtension({
+        language: markdownLanguage.language,
+        store,
+        onAddFiles,
+      }),
+      markdownLanguage.language.data.of({
+        autocomplete: additionalCompletionsSource,
+      }),
+      promptHistory({
+        storage: {
+          load: () => promptHistoryStorage.get(KEY),
+          save: (prompts) => promptHistoryStorage.set(KEY, prompts),
+        },
       }),
       EditorView.lineWrapping,
       minimalSetup(),
@@ -332,23 +423,14 @@ export const PromptInput = ({
           },
         },
       ]),
-      // Trap arrow up/down to prevent them from being used to navigate the editor
-      keymap.of([
-        {
-          key: "ArrowUp",
-          preventDefault: true,
-          stopPropagation: true,
-        },
-      ]),
-      keymap.of([
-        {
-          key: "ArrowDown",
-          preventDefault: true,
-          stopPropagation: true,
-        },
-      ]),
     ];
-  }, [completionSource, handleSubmit, handleEscape]);
+  }, [
+    store,
+    onAddFiles,
+    additionalCompletionsSource,
+    handleSubmit,
+    handleEscape,
+  ]);
 
   return (
     <ReactCodeMirror
@@ -360,8 +442,11 @@ export const PromptInput = ({
       basicSetup={false}
       extensions={extensions}
       onChange={onChange}
+      onKeyDown={onKeyDown}
       theme={theme === "dark" ? "dark" : "light"}
-      placeholder={placeholder || "Generate with AI"}
+      placeholder={
+        placeholder || `Generate with AI, ${CONTEXT_TRIGGER} to include context`
+      }
     />
   );
 };

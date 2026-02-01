@@ -7,7 +7,12 @@ import { TinyCode } from "@/components/editor/cell/TinyCode";
 import { useCellIds } from "@/core/cells/cells";
 import { displayCellName } from "@/core/cells/names";
 import { cn } from "@/utils/cn";
-import { type CustomNodeProps, getNodeHeight } from "./elements";
+import {
+  type CustomNodeProps,
+  getNodeHeight,
+  INPUTS_HANDLE_ID,
+  OUTPUTS_HANDLE_ID,
+} from "./elements";
 import type { LayoutDirection } from "./types";
 
 function getWidth(canvasWidth: number) {
@@ -23,7 +28,7 @@ const EQUALITY_CHECK = (
   prevProps: CustomNodeProps,
   nextProps: CustomNodeProps,
 ) => {
-  const keys: Array<keyof CustomNodeProps> = ["data", "selected", "id"];
+  const keys: (keyof CustomNodeProps)[] = ["data", "selected", "id"];
   return keys.every((key) => prevProps[key] === nextProps[key]);
 };
 
@@ -42,13 +47,15 @@ export const CustomNode = memo((props: CustomNodeProps) => {
     <div>
       <Handle
         type="target"
-        id="inputs"
+        id={INPUTS_HANDLE_ID}
+        data-testid="input-one"
         position={edgeMarkers === "LR" ? Position.Left : Position.Top}
         style={{ background: color }}
       />
       <Handle
         type="source"
-        id="inputs"
+        id={INPUTS_HANDLE_ID}
+        data-testid="input-two"
         position={edgeMarkers === "LR" ? Position.Left : Position.Top}
         style={{ background: color }}
       />
@@ -69,13 +76,15 @@ export const CustomNode = memo((props: CustomNodeProps) => {
       </div>
       <Handle
         type="source"
-        id="outputs"
+        id={OUTPUTS_HANDLE_ID}
+        data-testid="output-one"
         position={edgeMarkers === "LR" ? Position.Right : Position.Bottom}
         style={{ background: color }}
       />
       <Handle
         type="target"
-        id="outputs"
+        id={OUTPUTS_HANDLE_ID}
+        data-testid="output-two"
         position={edgeMarkers === "LR" ? Position.Right : Position.Bottom}
         style={{ background: color }}
       />

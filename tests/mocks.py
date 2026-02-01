@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import re
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable
 
@@ -8,6 +10,29 @@ import pytest
 
 from marimo import __version__
 from marimo._utils.paths import maybe_make_dirs
+from marimo._utils.platform import is_windows
+
+
+class ToText(HTMLParser):
+    def __init__(self) -> None:
+        HTMLParser.__init__(self)
+        self._text = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if len(text) > 0:
+            text = re.sub("[ \t\r\n]+", " ", text)
+            self._text.append(text.strip())
+
+    def text(self) -> str:
+        return " ".join(self._text).strip()
+
+    @staticmethod
+    def apply(html: str) -> str:
+        parser = ToText()
+        parser.feed(html)
+        parser.close()
+        return parser.text()
 
 
 def snapshotter(current_file: str) -> Callable[[str, str], None]:
@@ -93,3 +118,25 @@ def _sanitize_version(output: str) -> str:
     return output.replace(f"{__version__} (editable)", "0.0.0").replace(
         f"{__version__}", "0.0.0"
     )
+
+
+NON_WINDOWS_EDGE_CASE_FILENAMES = [
+    "test<script>.py",
+    'test"quotes".py',
+]
+
+
+EDGE_CASE_FILENAMES = [
+    # Unicode characters
+    "tést.py",
+    "café.py",
+    "测试.py",
+    "🚀notebook.py",
+    # Spaces
+    "test file with spaces.py",
+    # Mixed unicode and spaces
+    "café notebook.py",
+    "测试 file.py",
+    # Injection attempts
+    *(NON_WINDOWS_EDGE_CASE_FILENAMES if not is_windows() else []),
+]

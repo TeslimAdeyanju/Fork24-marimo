@@ -4,9 +4,10 @@ import { useAtomValue } from "jotai";
 import { CpuIcon, MemoryStickIcon, MicrochipIcon } from "lucide-react";
 import type React from "react";
 import { useState } from "react";
+import { useNumberFormatter } from "react-aria";
 import { Tooltip } from "@/components/ui/tooltip";
 import { connectionAtom } from "@/core/network/connection";
-import { getUsageStats } from "@/core/network/requests";
+import { useRequestClient } from "@/core/network/requests";
 import type { UsageResponse } from "@/core/network/types";
 import { isWasm } from "@/core/wasm/utils";
 import { WebSocketState } from "@/core/websocket/types";
@@ -14,9 +15,10 @@ import { useAsyncData } from "@/hooks/useAsyncData";
 import { useInterval } from "@/hooks/useInterval";
 import { cn } from "@/utils/cn";
 
-export const MachineStats: React.FC = (props) => {
+export const MachineStats: React.FC = () => {
   const [nonce, setNonce] = useState(0);
   const connection = useAtomValue(connectionAtom);
+  const { getUsageStats } = useRequestClient();
   useInterval(
     () => setNonce((nonce) => nonce + 1),
     // Refresh every 10 seconds, or when the document becomes visible
@@ -55,23 +57,42 @@ const MemoryUsageBar: React.FC<{
 }> = ({ memory, kernel, server }) => {
   const { percent, total, available } = memory;
   const roundedPercent = Math.round(percent);
+
+  const gbFormatter = useNumberFormatter({
+    maximumFractionDigits: 2,
+  });
+  const mbFormatter = useNumberFormatter({
+    maximumFractionDigits: 0,
+  });
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes > 1024 * 1024 * 1024) {
+      return `${gbFormatter.format(bytes / (1024 * 1024 * 1024))} GB`;
+    }
+    return `${mbFormatter.format(bytes / (1024 * 1024))} MB`;
+  };
+
+  const formatGB = (bytes: number): string => {
+    return gbFormatter.format(bytes / (1024 * 1024 * 1024));
+  };
+
   return (
     <Tooltip
       delayDuration={200}
       content={
         <div className="flex flex-col gap-1">
           <span>
-            <b>computer memory:</b> {asGB(total - available)} / {asGB(total)} GB
-            ({roundedPercent}%)
+            <b>computer memory:</b> {formatGB(total - available)} /{" "}
+            {formatGB(total)} GB ({roundedPercent}%)
           </span>
           {server?.memory && (
             <span>
-              <b>marimo server:</b> {asGBorMB(server.memory)}
+              <b>marimo server:</b> {formatBytes(server.memory)}
             </span>
           )}
           {kernel?.memory && (
             <span>
-              <b>kernel:</b> {asGBorMB(kernel.memory)}
+              <b>kernel:</b> {formatBytes(kernel.memory)}
             </span>
           )}
         </div>
@@ -121,6 +142,20 @@ const GPUBar: React.FC<{ gpus: GPU[] }> = ({ gpus }) => {
       gpus.length,
   );
 
+  const gbFormatter = useNumberFormatter({
+    maximumFractionDigits: 2,
+  });
+  const mbFormatter = useNumberFormatter({
+    maximumFractionDigits: 0,
+  });
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes > 1024 * 1024 * 1024) {
+      return `${gbFormatter.format(bytes / (1024 * 1024 * 1024))} GB`;
+    }
+    return `${mbFormatter.format(bytes / (1024 * 1024))} MB`;
+  };
+
   return (
     <Tooltip
       delayDuration={200}
@@ -131,7 +166,7 @@ const GPUBar: React.FC<{ gpus: GPU[] }> = ({ gpus }) => {
               <b>
                 GPU {gpu.index} ({gpu.name}):
               </b>{" "}
-              {asGBorMB(gpu.memory.used)} / {asGBorMB(gpu.memory.total)} GB (
+              {formatBytes(gpu.memory.used)} / {formatBytes(gpu.memory.total)} (
               {Math.round(gpu.memory.percent)}%)
             </span>
           ))}
@@ -140,7 +175,7 @@ const GPUBar: React.FC<{ gpus: GPU[] }> = ({ gpus }) => {
     >
       <div className="flex items-center gap-1" data-testid="gpu-bar">
         <MicrochipIcon className="w-4 h-4" />
-        <Bar percent={avgPercent} colorClassName="bg-[var(--grass-9)]" />
+        <Bar percent={avgPercent} colorClassName="bg-(--grass-9)" />
       </div>
     </Tooltip>
   );
@@ -151,7 +186,7 @@ const Bar: React.FC<{ percent: number; colorClassName?: string }> = ({
   colorClassName,
 }) => {
   return (
-    <div className="h-3 w-20 bg-[var(--slate-4)] rounded-lg overflow-hidden border">
+    <div className="h-3 w-20 bg-(--slate-4) rounded-lg overflow-hidden border">
       <div
         className={cn("h-full bg-primary", colorClassName)}
         style={{ width: `${percent}%` }}
@@ -159,26 +194,3 @@ const Bar: React.FC<{ percent: number; colorClassName?: string }> = ({
     </div>
   );
 };
-
-function asGBorMB(bytes: number): string {
-  if (bytes > 1024 * 1024 * 1024) {
-    return `${asGB(bytes)} GB`;
-  }
-  return `${asMB(bytes)} MB`;
-}
-
-function asMB(bytes: number) {
-  // 0 decimal places
-  const format = new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 0,
-  });
-  return format.format(bytes / (1024 * 1024));
-}
-
-function asGB(bytes: number) {
-  // At most 2 decimal places
-  const format = new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 2,
-  });
-  return format.format(bytes / (1024 * 1024 * 1024));
-}

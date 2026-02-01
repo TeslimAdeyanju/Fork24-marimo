@@ -1,30 +1,38 @@
 /* Copyright 2024 Marimo. All rights reserved. */
 
+import type { EditorView } from "@codemirror/view";
 import type * as LSP from "vscode-languageserver-protocol";
+import { getNotebook } from "@/core/cells/cells";
 import type { CellId } from "@/core/cells/ids";
 import { store } from "@/core/state/jotai";
 import { invariant } from "@/utils/invariant";
 import { Logger } from "@/utils/Logger";
 import { LRUCache } from "@/utils/lru";
+import { Objects } from "@/utils/objects";
 import { topologicalCodesAtom } from "../copilot/getCodes";
 import { createNotebookLens, type NotebookLens } from "./lens";
 import {
   CellDocumentUri,
   type ILanguageServerClient,
   isClientWithNotify,
-  isClientWithPlugins,
 } from "./types";
 import { getLSPDocument } from "./utils";
 
 class Snapshotter {
   private documentVersion = 0;
+  private readonly getNotebookCode: () => {
+    cellIds: CellId[];
+    codes: Record<CellId, string>;
+  };
 
   constructor(
-    private readonly getNotebookCode: () => {
+    getNotebookCode: () => {
       cellIds: CellId[];
       codes: Record<CellId, string>;
     },
-  ) {}
+  ) {
+    this.getNotebookCode = getNotebookCode;
+  }
 
   /**
    * Map from the global document version to the cell id and version.
@@ -78,19 +86,41 @@ class Snapshotter {
   }
 }
 
+const defaultGetNotebookEditors = () => {
+  const evs = getNotebook().cellHandles;
+  return Objects.mapValues(evs, (r) => r.current?.editorViewOrNull);
+};
+
 export class NotebookLanguageServerClient implements ILanguageServerClient {
   public readonly documentUri: LSP.DocumentUri;
   private readonly client: ILanguageServerClient;
   private readonly snapshotter: Snapshotter;
-
+  private readonly getNotebookEditors: () => Record<
+    CellId,
+    EditorView | null | undefined
+  >;
+  private readonly initialSettings: Record<string, unknown>;
   private static readonly SEEN_CELL_DOCUMENT_URIS = new Set<CellDocumentUri>();
+
+  /**
+   * Cache of completion items to avoid jitter while typing in the same completion item
+   */
+  private readonly completionItemCache = new LRUCache<
+    string,
+    Promise<LSP.CompletionItem>
+  >(10);
 
   constructor(
     client: ILanguageServerClient,
     initialSettings: Record<string, unknown>,
+    getNotebookEditors: () => Record<
+      CellId,
+      EditorView | null | undefined
+    > = defaultGetNotebookEditors,
   ) {
     this.documentUri = getLSPDocument();
-
+    this.getNotebookEditors = getNotebookEditors;
+    this.initialSettings = initialSettings;
     this.client = client;
     this.patchProcessNotification();
 
@@ -106,6 +136,17 @@ export class NotebookLanguageServerClient implements ILanguageServerClient {
     });
 
     this.snapshotter = new Snapshotter(this.getNotebookCode.bind(this));
+  }
+
+  onNotification(
+    listener: (n: {
+      jsonrpc: "2.0";
+      id?: null | undefined;
+      method: "textDocument/publishDiagnostics";
+      params: LSP.PublishDiagnosticsParams;
+    }) => void,
+  ): () => boolean {
+    return this.client.onNotification(listener);
   }
 
   get ready(): boolean {
@@ -144,14 +185,35 @@ export class NotebookLanguageServerClient implements ILanguageServerClient {
     this.client.close();
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  detachPlugin(plugin: any): void {
-    this.client.detachPlugin(plugin);
-  }
+  /**
+   * Re-synchronize all open documents with the LSP server.
+   * This is called after a WebSocket reconnection to restore document state.
+   */
+  public async resyncAllDocuments(): Promise<void> {
+    invariant(
+      isClientWithNotify(this.client),
+      "notify is not a method on the client",
+    );
+    await this.client.initialize();
+    this.client.notify("workspace/didChangeConfiguration", {
+      settings: this.initialSettings,
+    });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  attachPlugin(plugin: any): void {
-    this.client.attachPlugin(plugin);
+    // Get the current document state
+    const { lens, version } = this.snapshotter.snapshot();
+
+    // Re-open the merged document with the LSP server
+    // This sends a textDocument/didOpen for the entire notebook
+    await this.client.textDocumentDidOpen({
+      textDocument: {
+        languageId: "python", // Default to Python for marimo notebooks
+        text: lens.mergedText,
+        uri: this.documentUri,
+        version: version,
+      },
+    });
+
+    Logger.log("[lsp] Document re-synchronization complete");
   }
 
   private getNotebookCode() {
@@ -294,7 +356,7 @@ export class NotebookLanguageServerClient implements ILanguageServerClient {
 
   textDocumentCodeAction(
     params: LSP.CodeActionParams,
-  ): Promise<Array<LSP.Command | LSP.CodeAction> | null> {
+  ): Promise<(LSP.Command | LSP.CodeAction)[] | null> {
     const disabledCodeAction = true;
     if (disabledCodeAction) {
       return Promise.resolve(null);
@@ -365,37 +427,26 @@ export class NotebookLanguageServerClient implements ILanguageServerClient {
     const newEdits = lens.getEditsForNewText(edit.newText);
     const editsToNewCode = new Map(newEdits.map((e) => [e.cellId, e.text]));
 
-    invariant(
-      isClientWithPlugins(this.client),
-      "Expected client with plugins.",
-    );
-
     // Update the code in the plugins manually
-    for (const plugin of this.client.plugins) {
-      const documentUri: string = plugin.documentUri;
-      if (!CellDocumentUri.is(documentUri)) {
-        Logger.warn("Invalid cell document URI", documentUri);
-        continue;
-      }
-
-      const cellId = CellDocumentUri.parse(documentUri);
+    const editors = this.getNotebookEditors();
+    for (const [cellId, ev] of Objects.entries(editors)) {
       const newCode = editsToNewCode.get(cellId);
       if (newCode == null) {
         Logger.warn("No new code for cell", cellId);
         continue;
       }
 
-      if (!plugin.view) {
-        Logger.warn("No view for plugin", plugin);
+      if (!ev) {
+        Logger.warn("No view for plugin", cellId);
         continue;
       }
 
       // Only update if it has changed
-      if (plugin.view.state.doc.toString() !== newCode) {
-        plugin.view.dispatch({
+      if (ev.state.doc.toString() !== newCode) {
+        ev.dispatch({
           changes: {
             from: 0,
-            to: plugin.view.state.doc.length,
+            to: ev.state.doc.length,
             insert: newCode,
           },
         });
@@ -416,10 +467,19 @@ export class NotebookLanguageServerClient implements ILanguageServerClient {
     };
   }
 
-  completionItemResolve(
+  async completionItemResolve(
     params: LSP.CompletionItem,
   ): Promise<LSP.CompletionItem> {
-    return this.client.completionItemResolve(params);
+    // Used cached result to avoid jitter while typing in the same completion item
+    const key = JSON.stringify(params);
+    const cached = this.completionItemCache.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const resolved = this.client.completionItemResolve(params);
+    this.completionItemCache.set(key, resolved);
+    return resolved;
   }
 
   async textDocumentPrepareRename(

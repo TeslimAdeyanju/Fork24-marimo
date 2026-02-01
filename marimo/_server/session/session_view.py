@@ -11,26 +11,36 @@ from marimo._messaging.ops import (
     CellOp,
     Datasets,
     DataSourceConnections,
+    InstallingPackageAlert,
     Interrupted,
     MessageOperation,
     SendUIElementMessage,
+    SQLTableListPreview,
+    SQLTablePreview,
+    StartupLogs,
     UpdateCellCodes,
     UpdateCellIdsRequest,
     Variables,
     VariableValue,
     VariableValues,
+    deserialize_kernel_message,
 )
+from marimo._messaging.types import KernelMessage
 from marimo._runtime.requests import (
     ControlRequest,
     CreationRequest,
     ExecuteMultipleRequest,
     ExecutionRequest,
     SetUIElementValueRequest,
+    SyncGraphRequest,
+)
+from marimo._sql.connection_utils import (
+    update_table_in_connection,
+    update_table_list_in_connection,
 )
 from marimo._sql.engines.duckdb import INTERNAL_DUCKDB_ENGINE
 from marimo._types.ids import CellId_t, WidgetModelId
 from marimo._utils.lists import as_list
-from marimo._utils.parse_dataclass import parse_raw
 
 ExportType = Literal["html", "md", "ipynb", "session"]
 
@@ -95,6 +105,14 @@ class SessionView:
             WidgetModelId, list[SendUIElementMessage]
         ] = {}
 
+        # Startup logs for startup command - only one at a time
+        self.startup_logs: Optional[StartupLogs] = None
+
+        # Package installation logs - accumulated per package
+        self.package_logs: dict[
+            str, str
+        ] = {}  # package name -> accumulated logs
+
         # Auto-saving
         self.auto_export_state = AutoExportState()
 
@@ -104,17 +122,10 @@ class SessionView:
     def _add_last_run_code(self, req: ExecutionRequest) -> None:
         self.last_executed_code[req.cell_id] = req.code
 
-    def add_raw_operation(self, raw_operation: Any) -> None:
+    def add_raw_operation(self, raw_operation: KernelMessage) -> None:
         self._touch()
-
-        # parse_raw only accepts a dataclass, so we wrap MessageOperation in a
-        # dataclass.
-        @dataclass
-        class _Container:
-            operation: MessageOperation
-
-        operation = parse_raw({"operation": raw_operation}, _Container)
-        self.add_operation(operation.operation)
+        # Type ignore because MessageOperation is a Union, not a class
+        self.add_operation(deserialize_kernel_message(raw_operation))  # type: ignore[arg-type]
 
     def add_control_request(self, request: ControlRequest) -> None:
         self._touch()
@@ -122,7 +133,7 @@ class SessionView:
         if isinstance(request, SetUIElementValueRequest):
             for object_id, value in request.ids_and_values:
                 self._add_ui_value(object_id, value)
-        elif isinstance(request, ExecuteMultipleRequest):
+        elif isinstance(request, (ExecuteMultipleRequest, SyncGraphRequest)):
             for execution_request in request.execution_requests:
                 self._add_last_run_code(execution_request)
         elif isinstance(request, CreationRequest):
@@ -148,10 +159,9 @@ class SessionView:
                     return
 
     def add_operation(self, operation: MessageOperation) -> None:
+        """Add an operation to the session view."""
         self._touch()
         self.auto_export_state.mark_all_stale()
-
-        """Add an operation to the session view."""
 
         if isinstance(operation, CellOp):
             previous = self.cell_operations.get(operation.cell_id)
@@ -244,6 +254,27 @@ class SessionView:
                 connections=list(connections.values())
             )
 
+        elif isinstance(operation, SQLTablePreview):
+            sql_table_preview = operation
+            sql_metadata = sql_table_preview.metadata
+            table_preview_connections = self.data_connectors.connections
+            if sql_table_preview.table is not None:
+                update_table_in_connection(
+                    table_preview_connections,
+                    sql_metadata,
+                    sql_table_preview.table,
+                )
+
+        elif isinstance(operation, SQLTableListPreview):
+            sql_table_list_preview = operation
+            sql_metadata = sql_table_list_preview.metadata
+            table_list_connections = self.data_connectors.connections
+            update_table_list_in_connection(
+                table_list_connections,
+                sql_metadata,
+                sql_table_list_preview.tables,
+            )
+
         elif isinstance(operation, UpdateCellIdsRequest):
             self.cell_ids = operation
 
@@ -259,6 +290,35 @@ class SessionView:
             messages.append(operation)
             # TODO: cleanup/merge previous 'update' messages
             self.model_messages[operation.model_id] = messages
+
+        elif isinstance(operation, StartupLogs):
+            prev = self.startup_logs.content if self.startup_logs else ""
+            self.startup_logs = StartupLogs(
+                content=prev + operation.content,
+                status=operation.status,
+            )
+
+        elif isinstance(operation, InstallingPackageAlert):
+            # Handle streaming logs if present
+            if operation.logs and operation.log_status:
+                for package_name, new_content in operation.logs.items():
+                    if operation.log_status == "start":
+                        # Start new log for this package
+                        self.package_logs[package_name] = new_content
+                    elif operation.log_status == "append":
+                        # Append to existing log
+                        prev_content = self.package_logs.get(package_name, "")
+                        self.package_logs[package_name] = (
+                            prev_content + new_content
+                        )
+                    elif operation.log_status == "done":
+                        # Append final content and mark as done
+                        prev_content = self.package_logs.get(package_name, "")
+                        self.package_logs[package_name] = (
+                            prev_content + new_content
+                        )
+                        # We could clean up completed logs here if desired,
+                        # but for now keep them for replay purposes
 
     def get_cell_outputs(
         self, ids: list[CellId_t]
@@ -321,6 +381,9 @@ class SessionView:
         if self.model_messages:
             for messages in self.model_messages.values():
                 all_ops.extend(messages)
+        # Only include startup logs if they are in progress (not done)
+        if self.startup_logs and self.startup_logs.status != "done":
+            all_ops.append(self.startup_logs)
         return all_ops
 
     def is_empty(self) -> bool:

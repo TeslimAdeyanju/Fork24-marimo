@@ -17,9 +17,12 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { menuItemVariants } from "@/components/ui/menu-items";
 import { Tooltip } from "@/components/ui/tooltip";
 import { toast } from "@/components/ui/use-toast";
+import { useCellData, useCellRuntime } from "@/core/cells/cells";
 import { CellOutputId } from "@/core/cells/ids";
+import { isOutputEmpty } from "@/core/cells/outputs";
 import { goToDefinitionAtCursorPosition } from "@/core/codemirror/go-to-definition/utils";
 import { sendToPanelManager } from "@/core/vscode/vscode-bindings";
 import { copyToClipboard } from "@/utils/copy";
@@ -30,12 +33,29 @@ import {
   useCellActionButtons,
 } from "../actions/useCellActionButton";
 
-interface Props extends CellActionButtonProps {
+interface Props
+  extends Pick<CellActionButtonProps, "cellId" | "getEditorView"> {
   children: React.ReactNode;
 }
 
-export const CellActionsContextMenu = ({ children, ...props }: Props) => {
-  const actions = useCellActionButtons({ cell: props });
+export const CellActionsContextMenu = ({
+  children,
+  cellId,
+  getEditorView,
+}: Props) => {
+  const cellData = useCellData(cellId);
+  const cellRuntime = useCellRuntime(cellId);
+  const actions = useCellActionButtons({
+    cell: {
+      cellId: cellId,
+      name: cellData.name,
+      config: cellData.config,
+      status: cellRuntime.status,
+      hasOutput: !isOutputEmpty(cellRuntime.output),
+      hasConsoleOutput: cellRuntime.consoleOutputs.length > 0,
+      getEditorView,
+    },
+  });
   const [imageRightClicked, setImageRightClicked] =
     React.useState<HTMLImageElement>();
 
@@ -53,9 +73,7 @@ export const CellActionsContextMenu = ({ children, ...props }: Props) => {
         }
 
         // No selection, copy the full cell output
-        const output = document.getElementById(
-          CellOutputId.create(props.cellId),
-        );
+        const output = document.getElementById(CellOutputId.create(cellId));
         if (!output) {
           Logger.warn("cell-context-menu: output not found");
           return;
@@ -77,7 +95,6 @@ export const CellActionsContextMenu = ({ children, ...props }: Props) => {
       hidden: Boolean(imageRightClicked),
       icon: <ClipboardPasteIcon size={13} strokeWidth={1.5} />,
       handle: async () => {
-        const { getEditorView } = props;
         const editorView = getEditorView();
         if (!editorView) {
           return;
@@ -147,7 +164,6 @@ export const CellActionsContextMenu = ({ children, ...props }: Props) => {
       label: "Go to Definition",
       icon: <SearchIcon size={13} strokeWidth={1.5} />,
       handle: () => {
-        const { getEditorView } = props;
         const editorView = getEditorView();
         if (editorView) {
           goToDefinitionAtCursorPosition(editorView);
@@ -188,7 +204,7 @@ export const CellActionsContextMenu = ({ children, ...props }: Props) => {
                     </div>
                   )}
                   <div className="flex-1">{action.label}</div>
-                  <div className="flex-shrink-0 text-sm">
+                  <div className="shrink-0 text-sm">
                     {action.hotkey && renderMinimalShortcut(action.hotkey)}
                     {action.rightElement}
                   </div>
@@ -204,19 +220,40 @@ export const CellActionsContextMenu = ({ children, ...props }: Props) => {
               }
 
               return (
-                <ContextMenuItem
-                  key={action.label}
-                  className={action.disabled ? "!opacity-50" : ""}
-                  onSelect={(evt) => {
-                    if (action.disableClick || action.disabled) {
-                      return;
-                    }
-                    action.handle(evt);
-                  }}
-                  variant={action.variant}
-                >
-                  {body}
-                </ContextMenuItem>
+                <Fragment key={action.label}>
+                  {
+                    // Set disableClick items such as cell name input
+                    // to div to prevent roving focus
+                    action.disableClick ? (
+                      <div
+                        className={menuItemVariants({
+                          className: action.disabled ? "opacity-50!" : "",
+                          variant: action.variant,
+                        })}
+                        onKeyDown={(evt) => {
+                          evt.stopPropagation();
+                        }}
+                        // Prevent keydown propagation, that focus does not jump to shortcut which start with same letter
+                        // e.g. input "C", then focus jump to "Copy"
+                      >
+                        {body}
+                      </div>
+                    ) : (
+                      <ContextMenuItem
+                        className={action.disabled ? "opacity-50!" : ""}
+                        onSelect={(evt) => {
+                          if (action.disableClick || action.disabled) {
+                            return;
+                          }
+                          action.handle(evt);
+                        }}
+                        variant={action.variant}
+                      >
+                        {body}
+                      </ContextMenuItem>
+                    )
+                  }
+                </Fragment>
               );
             })}
             {i < allActions.length - 1 && <ContextMenuSeparator />}
